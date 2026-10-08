@@ -1,7 +1,8 @@
 // Editor de canciones: texto ChordPro a la izquierda y vista previa interactiva a la derecha.
 // En la vista previa: clic en una letra = poner un acorde ahí; clic en un acorde = cambiarlo o
 // quitarlo; arrastrar un acorde = moverlo (incluso a otra línea).
-import { parseSong, songKey, transposeChordText, spellingFor } from './song.js';
+import { parseSong, parseLyricLine, songKey, transposeChordText, spellingFor } from './song.js';
+import { renderLyricLine, separateChords } from './render.js';
 import { parseKey, keyName, noteName, keyUsesFlats } from './chords.js';
 import { chordsOverLyricsToChordPro } from './textimport.js';
 import { esc, debounce } from './util.js';
@@ -119,34 +120,28 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
       html += renderEditableLine(lineToModel(line), li, chorus);
     });
     pre.innerHTML = html || '<div class="empty">Escribí la letra en el cuadro de texto.</div>';
+    separateChords(pre);
   }
 
   function renderEditableLine(model, li, chorus) {
-    const { text, chords } = model;
-    const hasChords = chords.length > 0;
-    // cortes: posiciones donde empieza un acorde o una palabra
-    const order = chords.map((c, ci) => ({ ...c, ci })).sort((a, b) => a.pos - b.pos || a.ci - b.ci);
-    const chordAt = new Map();
-    for (const c of order) { if (!chordAt.has(c.pos)) chordAt.set(c.pos, []); chordAt.get(c.pos).push(c); }
-    const cuts = new Set([0, ...chordAt.keys()]);
-    for (let i = 1; i < text.length; i++) if (text[i - 1] === ' ' && text[i] !== ' ') cuts.add(i);
-    const sortedCuts = [...cuts].filter(p => p <= text.length).sort((a, b) => a - b);
-    let html = '', word = '';
-    const flush = () => { if (word) html += `<span class="w">${word}</span>`; word = ''; };
-    sortedCuts.forEach((start, k) => {
-      const end = k + 1 < sortedCuts.length ? sortedCuts[k + 1] : text.length;
-      const here = chordAt.get(start) || [];
-      // varios acordes en la misma posición: los anteriores van solos
-      here.slice(0, -1).forEach(c => { word += `<span class="c"><span class="ch" data-li="${li}" data-pi="${c.ci}">${esc(c.name)}</span><span class="ly"></span></span>`; });
-      const c = here.at(-1);
-      let ly = '';
-      for (let p = start; p < end; p++) ly += `<span class="ch-hit" data-li="${li}" data-pos="${p}">${text[p] === ' ' ? ' ' : esc(text[p])}</span>`;
-      if (end === text.length) ly += `<span class="ch-hit" data-li="${li}" data-pos="${text.length}">  </span>`;
-      word += `<span class="c">${hasChords ? `<span class="ch"${c ? ` data-li="${li}" data-pi="${c.ci}"` : ''}>${c ? esc(c.name) : ''}</span>` : '<span class="ch"></span>'}<span class="ly">${ly}</span></span>`;
-      if (text[end - 1] === ' ' || end === text.length) flush();
-    });
-    flush();
-    return `<div class="line has-chords${chorus ? ' in-chorus' : ''}" ${chorus ? 'style="font-weight:700"' : ''}>${html}</div>`;
+    const len = model.text.length;
+    const parts = parseLyricLine(modelToLine(model));
+    if (!parts.length) parts.push({ chord: null, text: '' });
+    // modelToLine ordena los acordes por posición: la k-ésima parte con acorde es sorted[k]
+    const sorted = model.chords.map((c, i) => ({ ...c, i })).sort((a, b) => a.pos - b.pos || a.i - b.i);
+    const ciOf = [];
+    let k = 0;
+    parts.forEach((p, pi) => { if (p.chord !== null) ciOf[pi] = sorted[k++].i; });
+    // cada letra es un blanco donde hacer clic para poner un acorde
+    const textFn = (t, off) => {
+      let h = '';
+      for (let i = 0; i < t.length; i++) h += `<span class="ch-hit" data-li="${li}" data-pos="${off + i}">${esc(t[i])}</span>`;
+      if (off + t.length === len) h += `<span class="ch-hit end" data-li="${li}" data-pos="${len}">   </span>`;
+      return h;
+    };
+    const html = renderLyricLine(parts, c => c, { textFn, chordAttrs: pi => ` data-li="${li}" data-pi="${ciOf[pi]}"` })
+      .replace('<div class="line', '<div class="line has-chords');
+    return chorus ? `<div class="chorus">${html}</div>` : html;
   }
 
   // ---------------------------------------------------------------- edición de acordes

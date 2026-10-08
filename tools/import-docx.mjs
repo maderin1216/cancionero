@@ -93,6 +93,11 @@ function merge(chordChars, lyricChars) {
     }
     placed.push({ idx, chord: cleanChord(t.text) });
   }
+  // los acordes que caen después del final de la letra (un pasaje instrumental) van en un solo bloque
+  const tail = placed.filter(p => p.idx >= n);
+  if (tail.length > 1) {
+    placed.splice(placed.length - tail.length, tail.length, { idx: n, chord: tail.map(p => p.chord).join(' ') });
+  }
   let out = '', pos = 0;
   for (const p of placed) {
     if (p.idx > pos) { out += text.slice(pos, p.idx); pos = p.idx; }

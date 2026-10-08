@@ -1,33 +1,18 @@
-// Dibuja una canción en HTML: cada acorde queda arriba de la sílaba donde cambia.
+// Dibuja una canción en HTML como en el PDF: la letra va de corrido y cada acorde queda
+// "colgado" exactamente encima de la letra donde cambia (un ancla de ancho cero).
 import { transposeChordText, spellingFor } from './song.js';
 import { esc } from './util.js';
 
-/**
- * Convierte las partes de una línea en "átomos" (trozos de palabra), agrupados por palabra
- * para que el salto de línea en pantallas angostas nunca corte una palabra.
- */
-function lineAtoms(parts, chordFn) {
-  const atoms = [];
-  parts.forEach((p, pi) => {
-    const segs = p.text ? p.text.match(/[^ ]+ *| +/g) : [''];
-    segs.forEach((s, si) => atoms.push({ chord: si === 0 && p.chord !== null ? chordFn(p.chord) : null, text: s, pi, si }));
-  });
-  return atoms;
-}
-
-export function renderLyricLine(parts, chordFn, { editable = false } = {}) {
+/** HTML de una línea. `textFn(text, offset)` permite envolver cada letra (lo usa el editor). */
+export function renderLyricLine(parts, chordFn, { textFn = t => esc(t), chordAttrs = () => '' } = {}) {
   const hasChords = parts.some(p => p.chord !== null);
   const hasText = parts.some(p => p.text.trim());
-  const atoms = lineAtoms(parts, chordFn);
-  let html = '', word = '';
-  const flush = () => { if (word) html += `<span class="w">${word}</span>`; word = ''; };
-  for (const a of atoms) {
-    const ch = hasChords ? `<span class="ch"${editable && a.chord !== null ? ` data-pi="${a.pi}"` : ''}>${a.chord !== null ? esc(a.chord) : ''}</span>` : '';
-    const ly = hasText ? `<span class="ly">${esc(a.text)}</span>` : '';
-    word += `<span class="c">${ch}${ly}</span>`;
-    if (/ $/.test(a.text) || !a.text) flush();
-  }
-  flush();
+  let html = '', off = 0;
+  parts.forEach((p, pi) => {
+    if (p.chord !== null) html += `<span class="a"><span class="ch"${chordAttrs(pi)}>${esc(chordFn(p.chord))}</span></span>`;
+    html += textFn(p.text, off);
+    off += p.text.length;
+  });
   const cls = ['line', hasChords ? 'has-chords' : '', hasText ? '' : 'chords-only'].filter(Boolean).join(' ');
   return `<div class="${cls}">${html}</div>`;
 }
@@ -46,4 +31,51 @@ export function renderSong(song, { semis = 0, notation = 'latin', origKey = null
   }
   if (inChorus) html += '</div>';
   return html;
+}
+
+/**
+ * Si un acorde se pisa con el anterior (porque las sílabas son cortas), corre la letra lo justo
+ * para que no se superpongan. Los márgenes van en em para que escalen con el tamaño de letra.
+ */
+export function separateChords(container) {
+  const fs = parseFloat(getComputedStyle(container).fontSize) || 16;
+  const gap = 0.3 * fs;
+  for (const line of container.querySelectorAll('.line.has-chords:not(.chords-only)')) {
+    const anchors = [...line.querySelectorAll('.a')];
+    anchors.forEach(a => { a.style.marginLeft = ''; });
+    let prev = null;
+    for (const a of anchors) {
+      const ch = a.firstElementChild;
+      if (prev) {
+        const pr = prev.getBoundingClientRect(), cr = ch.getBoundingClientRect();
+        if (Math.abs(pr.top - cr.top) < 2) {
+          const need = pr.right + gap - cr.left;
+          if (need > 0.5) a.style.marginLeft = (need / fs).toFixed(3) + 'em';
+        }
+      }
+      prev = ch;
+    }
+  }
+}
+
+/**
+ * Modo "ajustar al ancho": calcula el tamaño de letra para que el verso más largo ocupe justo el
+ * ancho disponible (como el PDF). Devuelve el tamaño en px.
+ */
+export function fitToWidth(container, { max = 30, min = 5 } = {}) {
+  const base = 20;
+  container.style.fontSize = base + 'px';
+  separateChords(container);
+  let widest = 0;
+  for (const line of container.querySelectorAll('.line')) {
+    // el ancho del verso o, si un acorde del final sobresale, hasta donde termina el acorde
+    const left = line.getBoundingClientRect().left;
+    let right = line.offsetWidth;
+    for (const ch of line.querySelectorAll('.ch')) right = Math.max(right, ch.getBoundingClientRect().right - left);
+    widest = Math.max(widest, right);
+  }
+  const avail = container.clientWidth;
+  const size = widest ? Math.max(min, Math.min(max, Math.floor((base * avail / widest) * 10) / 10)) : max;
+  container.style.fontSize = size + 'px';
+  return size;
 }

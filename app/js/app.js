@@ -2,7 +2,7 @@
 import { Store } from './store.js';
 import { FsBackend, DevBackend, DropboxBackend } from './backends.js';
 import { DROPBOX_APP_KEY } from './config.js';
-import { renderSong } from './render.js';
+import { renderSong, fitToWidth, separateChords } from './render.js';
 import { transposedKeyName } from './song.js';
 import { keyName } from './chords.js';
 import { esc, debounce, formatDate } from './util.js';
@@ -13,7 +13,7 @@ import { renderEditor } from './editor.js';
 
 const SETTINGS_KEY = 'cancionero.settings';
 const settings = Object.assign(
-  { notation: 'latin', songSize: 18, wakeLock: true, dropboxAppKey: '' },
+  { notation: 'latin', songSize: 18, fit: true, wakeLock: true, dropboxAppKey: '' },
   (() => { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch { return {}; } })(),
 );
 const saveSettings = () => { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); applySettings(); };
@@ -207,15 +207,26 @@ function songView(path, lpath = null, idx = 0) {
         <span class="keybox"><button data-act="down" aria-label="Bajar medio tono">−</button><button class="key" data-act="keys">${esc(shown || '—')}</button><button data-act="up" aria-label="Subir medio tono">+</button></span>
         <span class="orig">${semis ? `${semis > 0 ? '+' : ''}${semis} · original ${esc(keyName(k, settings.notation))} <button data-act="reset">volver</button>` : 'tono original'}</span>
         <span class="spacer"></span>
-        <span class="size-btns row"><button data-act="smaller" aria-label="Letra más chica">A−</button><button data-act="bigger" aria-label="Letra más grande">A+</button></span>
+        <span class="size-btns row">${settings.fit ? '' : '<button data-act="fit" aria-label="Ajustar al ancho" title="Ajustar al ancho de la pantalla">↔</button>'}<button data-act="smaller" aria-label="Letra más chica">A−</button><button data-act="bigger" aria-label="Letra más grande">A+</button></span>
         <a class="btn small" href="#/editar/${encodeURIComponent(path)}">Editar</a>
         ${isElectron || matchMedia('(min-width: 900px)').matches ? '<button class="btn small" data-act="print">Imprimir</button>' : ''}
         <button class="btn small" data-act="addlist">+ Lista</button>
       </div>
-      <div class="song">${renderSong(entry.song, { semis, notation: settings.notation, origKey: k })}</div>
+      <div class="song${settings.fit ? ' fit' : ''}">${renderSong(entry.song, { semis, notation: settings.notation, origKey: k })}</div>
     </div>
     ${list ? listBar() : ''}`;
+    layout();
   };
+
+  const layout = () => {
+    const el = view.querySelector('.song');
+    if (!el) return;
+    if (settings.fit) fitToWidth(el);
+    else { el.style.fontSize = settings.songSize + 'px'; separateChords(el); }
+  };
+  const onResize = debounce(layout, 120);
+  window.addEventListener('resize', onResize);
+  document.fonts?.ready.then(() => layout());
 
   const listBar = () => {
     const prev = list.items[idx - 1], next = list.items[idx + 1];
@@ -236,8 +247,12 @@ function songView(path, lpath = null, idx = 0) {
     else if (a === 'down') setSemis(semis - 1);
     else if (a === 'reset') setSemis(0);
     else if (a === 'keys') { const s = await pickKey(entry.key, semis); if (s !== undefined) setSemis(s); }
+    else if (a === 'fit') { settings.fit = true; saveSettings(); render(); }
     else if (a === 'bigger' || a === 'smaller') {
-      settings.songSize = Math.max(12, Math.min(40, settings.songSize + (a === 'bigger' ? 2 : -2)));
+      const cur = settings.fit ? parseFloat(view.querySelector('.song').style.fontSize) || settings.songSize : settings.songSize;
+      settings.fit = false;
+      settings.songSize = Math.max(10, Math.min(48, Math.round(cur) + (a === 'bigger' ? 2 : -2)));
+      render();
       saveSettings();
     }
     else if (a === 'print') window.print();
@@ -264,7 +279,7 @@ function songView(path, lpath = null, idx = 0) {
   return {
     wake: settings.wakeLock,
     onStoreChange: () => { if (!list || store.lists.get(lpath)) render(); },
-    leave: () => { view.removeEventListener('click', onClick); view.removeEventListener('touchstart', ts); view.removeEventListener('touchend', te); },
+    leave: () => { window.removeEventListener('resize', onResize); view.removeEventListener('click', onClick); view.removeEventListener('touchstart', ts); view.removeEventListener('touchend', te); },
   };
 }
 
