@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#ffffff">
+  <title>Cancionero</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <button class="icon-btn" id="menuBtn" aria-label="Menú">
+      <svg viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+    </button>
+    <div class="search-wrap">
+      <svg class="search-ico" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+      <input id="search" type="search" placeholder="Buscar canción…" autocomplete="off" spellcheck="false">
+      <div id="searchResults" class="search-results" hidden></div>
+    </div>
+    <span id="syncDot" class="sync-dot" title=""></span>
+  </header>
+
+  <nav id="drawer" class="drawer" hidden>
+    <div class="drawer-panel">
+      <div class="drawer-title">Cancionero</div>
+      <a href="#/" data-nav>Canciones</a>
+      <a href="#/listas" data-nav>Listas</a>
+      <a href="#/nueva" data-nav>Nueva canción</a>
+      <a href="#/ajustes" data-nav>Ajustes</a>
+      <button id="syncBtn" class="drawer-sync">Sincronizar ahora</button>
+    </div>
+  </nav>
+
+  <main id="view"></main>
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

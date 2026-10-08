@@ -1,0 +1,44 @@
+{
+  "name": "cancionero",
+  "version": "1.0.0",
+  "main": "electron/main.mjs",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "node tools/dev-server.mjs 5180",
+    "start": "electron .",
+    "dist": "electron-builder --win portable"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "Cancionero con acordes",
+  "devDependencies": {
+    "@fontsource/carlito": "^5.3.0",
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3",
+    "jszip": "^3.10.2",
+    "opentype.js": "^2.0.0",
+    "sharp": "^0.35.5"
+  },
+  "type": "module",
+  "productName": "Cancionero",
+  "build": {
+    "appId": "ar.cancionero.app",
+    "productName": "Cancionero",
+    "files": [
+      "app/**",
+      "electron/**",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "portable",
+      "icon": "electron/icon.png"
+    },
+    "portable": {
+      "artifactName": "Cancionero.exe"
+    }
+  }
+}

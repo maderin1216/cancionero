@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "cancionero", "runtimeExecutable": "node", "runtimeArgs": ["tools/dev-server.mjs", "5180"], "port": 5180 }
+  ]
+}
