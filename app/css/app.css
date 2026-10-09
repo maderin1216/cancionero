@@ -149,6 +149,8 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 .song .chords-only .ch { position: static; margin-right: .6em; }
 .song .blank { height: .9em; }
 .song .chorus .line { font-weight: 700; }
+/* en el estribillo la letra va en negrita y los acordes no (como en los PDF) */
+.song .chorus .ch { font-weight: 400; }
 .song .comment { font-style: italic; color: var(--muted); margin: .3em 0; }
 
 .keygrid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; padding: 10px; }
