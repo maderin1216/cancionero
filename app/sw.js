@@ -1,6 +1,6 @@
 // Service worker: guarda la app para que abra sin conexión. Las canciones las guarda la app aparte.
 // Estrategia: responder desde la caché y actualizarla en segundo plano.
-const CACHE = 'cancionero-v2';
+const CACHE = 'cancionero-1.2';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/backends.js', 'js/chords.js', 'js/config.js', 'js/editor.js', 'js/render.js',

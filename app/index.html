@@ -9,6 +9,10 @@
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="stylesheet" href="css/app.css">
+  <script>
+    // aplicar el modo noche antes de dibujar, para que no parpadee en blanco
+    try { if (JSON.parse(localStorage.getItem('cancionero.settings') || '{}').theme === 'dark') document.documentElement.dataset.theme = 'dark'; } catch {}
+  </script>
 </head>
 <body>
   <header class="topbar">
@@ -30,7 +34,9 @@
       <a href="#/listas" data-nav>Listas</a>
       <a href="#/nueva" data-nav>Nueva canción</a>
       <a href="#/ajustes" data-nav>Ajustes</a>
+      <label class="drawer-night"><span>Modo noche</span><input id="nightToggle" type="checkbox" role="switch"></label>
       <button id="syncBtn" class="drawer-sync">Sincronizar ahora</button>
+      <div id="appVersion" class="drawer-version"></div>
     </div>
   </nav>
 

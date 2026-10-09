@@ -55,8 +55,15 @@ export function noteName(i, { notation = 'latin', flats = false } = {}) {
   return t[((i % 12) + 12) % 12];
 }
 
+// Preferencia del usuario: 'sharp' (DO#, LA#), 'flat' (REb, SIb) o 'auto' (según la tonalidad).
+let accidentalPref = 'auto';
+export const setAccidentals = p => { accidentalPref = p || 'auto'; };
+export const accidentals = () => accidentalPref;
+
 /** ¿La tonalidad con tónica `i` (mayor o menor) se escribe con bemoles? */
 export function keyUsesFlats(i, minor) {
+  if (accidentalPref === 'sharp') return false;
+  if (accidentalPref === 'flat') return true;
   return (minor ? FLAT_MINOR : FLAT_MAJOR).has(((i % 12) + 12) % 12);
 }
 

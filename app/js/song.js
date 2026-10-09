@@ -9,7 +9,7 @@
 // Un "acorde" entre corchetes puede contener anotaciones: [(RE LA SOL) x2], [FA#m-SOL].
 // Al transportar sólo cambian las palabras que son acordes.
 
-import { parseChord, transposeChord, parseKey, keyName, keyUsesFlats, isMinor } from './chords.js';
+import { parseChord, transposeChord, parseKey, keyName, keyUsesFlats, isMinor, accidentals } from './chords.js';
 
 const DIRECTIVE_RE = /^\{\s*([a-zA-Z_]+)\s*(?::\s*([\s\S]*?))?\s*\}$/;
 const ALIASES = { t: 'title', st: 'subtitle', k: 'key', c: 'comment', soc: 'start_of_chorus', eoc: 'end_of_chorus' };
@@ -99,8 +99,10 @@ export function songKey(song) {
 
 /** Opciones de escritura (sostenidos/bemoles) para la tonalidad destino. */
 export function spellingFor(origKey, semis, notation) {
-  if (!origKey) return { notation, flats: false, forceNotation: notation !== 'latin' };
-  return { notation, flats: keyUsesFlats(origKey.root + semis, origKey.minor), forceNotation: notation !== 'latin' };
+  // si el usuario eligió sostenidos o bemoles, se reescriben también los acordes sin transportar
+  const forceNotation = notation !== 'latin' || accidentals() !== 'auto';
+  if (!origKey) return { notation, flats: accidentals() === 'flat', forceNotation };
+  return { notation, flats: keyUsesFlats(origKey.root + semis, origKey.minor), forceNotation };
 }
 
 export function transposedKeyName(origKey, semis, notation) {

@@ -1,10 +1,10 @@
 // Cancionero: app principal (rutas y vistas).
 import { Store } from './store.js';
 import { FsBackend, DevBackend, DropboxBackend } from './backends.js';
-import { DROPBOX_APP_KEY } from './config.js';
+import { DROPBOX_APP_KEY, APP_VERSION } from './config.js';
 import { renderSong, fitToWidth, separateChords } from './render.js';
 import { transposedKeyName } from './song.js';
-import { keyName } from './chords.js';
+import { keyName, setAccidentals } from './chords.js';
 import { esc, debounce, formatDate } from './util.js';
 import { toast, openDialog, confirmDialog, formDialog } from './ui.js';
 import { renderEditor } from './editor.js';
@@ -13,12 +13,17 @@ import { renderEditor } from './editor.js';
 
 const SETTINGS_KEY = 'cancionero.settings';
 const settings = Object.assign(
-  { notation: 'latin', songSize: 18, fit: true, wakeLock: true, dropboxAppKey: '' },
+  { notation: 'latin', accidentals: 'sharp', theme: 'light', songSize: 18, fit: true, wakeLock: true, dropboxAppKey: '' },
   (() => { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch { return {}; } })(),
 );
 const saveSettings = () => { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); applySettings(); };
 function applySettings() {
   document.documentElement.style.setProperty('--song-size', settings.songSize + 'px');
+  setAccidentals(settings.accidentals);
+  document.documentElement.dataset.theme = settings.theme;
+  document.querySelector('meta[name=theme-color]')?.setAttribute('content', settings.theme === 'dark' ? '#000000' : '#ffffff');
+  const nt = document.getElementById('nightToggle');
+  if (nt) nt.checked = settings.theme === 'dark';
 }
 
 // ---------------------------------------------------------------- arranque
@@ -74,6 +79,10 @@ function setupChrome() {
   const drawer = $('#drawer');
   $('#menuBtn').onclick = () => { drawer.hidden = false; };
   drawer.onclick = e => { if (e.target === drawer || e.target.matches('a')) drawer.hidden = true; };
+  $('#appVersion').textContent = 'Versión ' + APP_VERSION;
+  const nt = $('#nightToggle');
+  nt.checked = settings.theme === 'dark';
+  nt.onchange = () => { settings.theme = nt.checked ? 'dark' : 'light'; saveSettings(); };
   $('#syncBtn').onclick = async () => { drawer.hidden = true; if (canSync()) { await store.sync(); toast(store.status === 'ok' ? 'Listo' : 'Error al sincronizar'); } };
 
   const input = $('#search'), box = $('#searchResults');
@@ -506,15 +515,22 @@ function settingsView() {
       <h1>Ajustes</h1>
       <label class="field"><span>Notación de acordes</span>
         <select name="notation"><option value="latin">Latina (DO, RE, MI…)</option><option value="us">Americana (C, D, E…)</option></select></label>
+      <label class="field"><span>Alteraciones</span>
+        <select name="accidentals"><option value="sharp">Sostenidos (DO#, FA#, LA#…)</option><option value="flat">Bemoles (REb, SOLb, SIb…)</option><option value="auto">Automático según el tono</option></select></label>
+      <label class="row" style="margin-bottom:12px"><input name="night" type="checkbox" ${settings.theme === 'dark' ? 'checked' : ''}> Modo noche (fondo negro, letras blancas)</label>
       <label class="field"><span>Tamaño de letra de las canciones: <b data-size>${settings.songSize}px</b></span>
         <input name="songSize" type="range" min="12" max="40" step="1" value="${settings.songSize}"></label>
       <label class="row" style="margin-bottom:18px"><input name="wakeLock" type="checkbox" ${settings.wakeLock ? 'checked' : ''}> Mantener la pantalla encendida al ver una canción</label>
       <h3>Almacenamiento</h3>
       ${storage}
-      <p class="hint" style="margin-top:24px">${store.songs.size} canciones · ${store.lists.size} listas</p>
+      <p class="hint" style="margin-top:24px">${store.songs.size} canciones · ${store.lists.size} listas · versión <span data-version></span></p>
     </div>`;
     view.querySelector('[name=notation]').value = settings.notation;
     view.querySelector('[name=notation]').onchange = e => { settings.notation = e.target.value; saveSettings(); };
+    view.querySelector('[name=accidentals]').value = settings.accidentals;
+    view.querySelector('[name=accidentals]').onchange = e => { settings.accidentals = e.target.value; saveSettings(); };
+    view.querySelector('[name=night]').onchange = e => { settings.theme = e.target.checked ? 'dark' : 'light'; saveSettings(); };
+    view.querySelector('[data-version]').textContent = APP_VERSION;
     view.querySelector('[name=songSize]').oninput = e => { settings.songSize = +e.target.value; view.querySelector('[data-size]').textContent = settings.songSize + 'px'; saveSettings(); };
     view.querySelector('[name=wakeLock]').onchange = e => { settings.wakeLock = e.target.checked; saveSettings(); };
     view.querySelector('[data-act=choose]')?.addEventListener('click', async () => {
