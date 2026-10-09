@@ -78,6 +78,7 @@ function updateChrome() {
   $('#drawerUser').textContent = store.me ? `${store.me.name} · ${ROLE_NAMES[store.me.role] || ''}` : '';
   $('#navUsers').hidden = !store.isAdmin;
   $('#navNew').hidden = !store.canEditSongs;
+  $('#logoutBtn').hidden = !store.loggedIn;
   const n = store.requests.incoming.length;
   $('#reqBadge').textContent = n || '';
   $('#reqBadge').hidden = !n;
@@ -91,6 +92,13 @@ function setupChrome() {
   const nt = $('#nightToggle');
   nt.checked = settings.theme === 'dark';
   nt.onchange = () => { settings.theme = nt.checked ? 'dark' : 'light'; saveSettings(); };
+  $('#logoutBtn').onclick = async () => {
+    drawer.hidden = true;
+    if (!await confirmDialog('¿Cerrar sesión en este dispositivo?', 'Cerrar sesión')) return;
+    await store.logout();
+    location.hash = '#/';
+    route();
+  };
   $('#syncBtn').onclick = async () => { drawer.hidden = true; await store.sync(); toast(store.status === 'ok' ? 'Listo' : 'Error al sincronizar'); };
   updateChrome();
 
