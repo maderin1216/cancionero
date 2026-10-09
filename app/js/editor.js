@@ -8,6 +8,12 @@ import { chordsOverLyricsToChordPro } from './textimport.js';
 import { esc, debounce } from './util.js';
 import { toast, openDialog, confirmDialog } from './ui.js';
 
+export const VIS_OPTIONS = [
+  ['private', 'Sólo yo'],
+  ['title', 'Los demás ven el título y me pueden pedir una copia'],
+  ['public', 'Los demás la ven (sólo lectura) y pueden copiarla'],
+];
+
 const DIRECTIVE_RE = /^\s*\{\s*([a-zA-Z_]+)\s*(?::\s*(.*?))?\s*\}\s*$/;
 
 // ---- una línea de letra como {text, chords:[{pos, name}]} y de vuelta
@@ -57,6 +63,7 @@ function splitSource(text) {
 export function renderEditor(view, { store, path, settings, onSaved, onCancel }) {
   const entry = path ? store.songs.get(path) : null;
   if (path && !entry) { view.innerHTML = '<div class="page empty">No se encontró la canción.</div>'; return {}; }
+  if (entry && !entry.mine) { view.innerHTML = '<div class="page empty">Esta canción no es tuya: no la podés editar. Podés agregar una copia a tus canciones desde la canción.</div>'; return {}; }
   const { meta, body } = splitSource(entry ? entry.text : '');
   const baseRev = entry?.rev; // versión que se empezó a editar, para detectar cambios de otros
   let dirty = false;
@@ -71,6 +78,7 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
     <div class="ed-meta">
       <label class="field"><span>Título</span><input name="title" value="${esc(meta.title)}" placeholder="Nombre de la canción"></label>
       <label class="field"><span>Tono original</span><input name="key" value="${esc(meta.key)}" placeholder="ej: SOL, MIm"></label>
+      <label class="field"><span>Quién la puede ver</span><select name="visibility">${VIS_OPTIONS.map(([v, t]) => `<option value="${v}" ${v === (entry?.visibility || 'private') ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
       <div class="field"><span>Transportar y guardar</span><div class="row"><button class="btn small" data-act="tdown">− ½ tono</button><button class="btn small" data-act="tup">+ ½ tono</button></div></div>
     </div>
     <div class="row" style="margin:4px 0 8px">
@@ -91,6 +99,7 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
   const pre = view.querySelector('.ed-preview');
   const titleIn = view.querySelector('[name=title]');
   const keyIn = view.querySelector('[name=key]');
+  const visIn = view.querySelector('[name=visibility]');
   src.value = body;
 
   const markDirty = () => { dirty = true; };
@@ -316,6 +325,7 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
   src.addEventListener('input', debounce(() => { markDirty(); renderPreview(); }, 150));
   titleIn.addEventListener('input', markDirty);
   keyIn.addEventListener('input', markDirty);
+  visIn.addEventListener('change', markDirty);
   const onKey = e => { if (e.ctrlKey && e.key.toLowerCase() === 's') { e.preventDefault(); save(); } };
   document.addEventListener('keydown', onKey);
   const onUnload = e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } };
@@ -328,17 +338,16 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
     if (!key) { const k = songKey(parseSong(src.value)); if (k) key = keyName(k); }
     const text = `{title: ${title}}\n${key ? `{key: ${key}}\n` : ''}\n${src.value.replace(/\s+$/, '')}\n`;
     try {
-      const p = await store.saveSong(path, text, { baseRev });
+      const p = await store.saveSong(path, text, { baseRev, visibility: visIn.value });
       dirty = false;
       toast('Guardada');
       onSaved(p);
     } catch (e) {
       if (e.status !== 409) { toast('No se pudo guardar: ' + e.message, 5000); return; }
       // otra persona guardó cambios mientras se editaba
-      const who = e.data.by ? `${e.data.by} modificó` : 'Alguien modificó';
-      if (!await confirmDialog(`${who} esta canción mientras la editabas. Si guardás igual, se pierden sus cambios (quedan en el historial). ¿Guardar igual?`, 'Guardar igual', true)) return;
+      if (!await confirmDialog('Esta canción se modificó desde otro dispositivo mientras la editabas. Si guardás igual, se reemplaza esa versión (queda en el historial). ¿Guardar igual?', 'Guardar igual', true)) return;
       try {
-        const p = await store.saveSong(path, text, { force: true });
+        const p = await store.saveSong(path, text, { force: true, visibility: visIn.value });
         dirty = false;
         toast('Guardada');
         onSaved(p);

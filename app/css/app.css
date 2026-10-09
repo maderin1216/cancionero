@@ -190,7 +190,7 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 
 /* ---------- editor ---------- */
 .editor { max-width: 1400px; margin: 0 auto; padding: 10px 14px; }
-.ed-meta { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 10px; }
+.ed-meta { display: grid; grid-template-columns: 2fr .8fr 2fr 1fr; gap: 10px; }
 .ed-meta .field { margin-bottom: 8px; }
 .ed-tabs { display: none; gap: 6px; margin: 6px 0; }
 .ed-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
@@ -249,3 +249,14 @@ body.logged-out .search-wrap { visibility: hidden; }
 .share-row { display: flex; align-items: center; gap: 10px; }
 .share-row > span { flex: 1; margin: 0; color: var(--ink); font-size: 16px; }
 .share-row select { width: auto; }
+
+/* ---------- pestañas, dueños y pedidos ---------- */
+.tabs { display: flex; gap: 6px; margin: 4px 0 10px; overflow-x: auto; }
+.tab { border: 1px solid var(--line); background: var(--bg); border-radius: 999px; padding: 7px 14px; font-size: 15px; white-space: nowrap; }
+.tab.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.tab.on .count { color: inherit; opacity: .7; }
+.item small.vis { color: var(--accent); }
+.song-owner { color: var(--muted); font-size: 14px; margin-bottom: 2px; }
+.badge { display: inline-block; min-width: 20px; padding: 1px 6px; border-radius: 999px; background: var(--danger); color: #fff; font-size: 13px; text-align: center; margin-left: 6px; }
+.vis-opt { margin: 8px 0; align-items: flex-start; }
+.vis-opt input { margin-top: 3px; }

@@ -4,9 +4,9 @@ import { APP_VERSION, API_BASE } from './config.js';
 import { renderSong, fitToWidth, separateChords } from './render.js';
 import { transposedKeyName } from './song.js';
 import { keyName, setAccidentals } from './chords.js';
-import { esc, debounce, formatDate } from './util.js';
+import { esc, debounce, formatDate, fold } from './util.js';
 import { toast, openDialog, confirmDialog, formDialog } from './ui.js';
-import { renderEditor } from './editor.js';
+import { renderEditor, VIS_OPTIONS } from './editor.js';
 
 // ---------------------------------------------------------------- ajustes (de cada dispositivo)
 
@@ -25,7 +25,8 @@ function applySettings() {
   if (nt) nt.checked = settings.theme === 'dark';
 }
 
-const ROLE_NAMES = { admin: 'Administrador', editor: 'Editor', reader: 'Lector' };
+const ROLE_NAMES = { admin: 'Administrador', editor: 'Usuario' };
+const VIS_SHORT = { private: '', title: 'título visible', public: 'visible para todos' };
 
 // ---------------------------------------------------------------- arranque
 
@@ -77,6 +78,9 @@ function updateChrome() {
   $('#drawerUser').textContent = store.me ? `${store.me.name} · ${ROLE_NAMES[store.me.role] || ''}` : '';
   $('#navUsers').hidden = !store.isAdmin;
   $('#navNew').hidden = !store.canEditSongs;
+  const n = store.requests.incoming.length;
+  $('#reqBadge').textContent = n || '';
+  $('#reqBadge').hidden = !n;
 }
 
 function setupChrome() {
@@ -162,6 +166,7 @@ function route() {
   else if (parts[0] === 'nueva' && store.canEditSongs) current = editorView(null);
   else if (parts[0] === 'ajustes') current = settingsView();
   else if (parts[0] === 'usuarios' && store.isAdmin) current = usersView();
+  else if (parts[0] === 'pedidos') current = requestsView();
   else current = songsView();
   search.placeholder = current.ownsSearch ? 'Filtrar canciones…' : 'Buscar canción…';
 }
@@ -219,24 +224,80 @@ function loginView() {
 
 // ---------------------------------------------------------------- vista: todas las canciones
 
+// pestaña elegida en la lista de canciones (se recuerda mientras la app está abierta)
+let songsTab = null;
+
 function songsView() {
   let q = '';
+  const tabResults = () => {
+    const all = store.search(q);
+    const mine = all.filter(r => r.song.mine), shared = all.filter(r => !r.song.mine);
+    const fq = fold(q).trim();
+    const others = store.catalog.filter(c => !fq || fold(c.title).includes(fq)).sort((a, b) => fold(a.title).localeCompare(fold(b.title)));
+    return { mine, shared, others };
+  };
   const render = () => {
-    const res = store.search(q);
+    const r = tabResults();
+    const nMine = [...store.songs.values()].filter(s => s.mine).length;
+    const nShared = store.songs.size - nMine;
+    if (!songsTab) songsTab = nMine || !nShared ? 'mine' : 'shared';
+    const tab = (id, label, n) => `<button class="tab${songsTab === id ? ' on' : ''}" data-tab="${id}">${label} <span class="count">${n}</span></button>`;
+    const songRow = x => `<li><a class="item" href="${songHash(x.song.path)}"><span class="t">${esc(x.song.title)}${x.snippet ? `<small>${esc(x.snippet)}</small>` : ''}${songsTab === 'shared' ? `<small>de ${esc(x.song.owner_name)}</small>` : ''}${songsTab === 'mine' && VIS_SHORT[x.song.visibility] ? `<small class="vis">${VIS_SHORT[x.song.visibility]}</small>` : ''}</span><span class="k">${esc(keyName(x.song.key, settings.notation))}</span></a></li>`;
+    const otherRow = c => `<li class="item"><span class="t">🔒 ${esc(c.title)}<small>de ${esc(c.owner_name)}</small></span>${c.copied ? '<span class="hint">ya tenés una copia</span>' : c.requested ? '<span class="hint">pedido enviado</span>' : `<button class="btn small" data-request="${esc(c.slug)}">Pedir copia</button>`}</li>`;
+    let body;
+    if (songsTab === 'mine') {
+      body = r.mine.length ? `<ul class="items">${r.mine.map(songRow).join('')}</ul>`
+        : `<div class="empty">${q ? 'Ninguna de tus canciones coincide.' : 'Todavía no tenés canciones propias. Creá una con "+ Nueva" o agregá a tus canciones una que te hayan compartido.'}</div>`;
+    } else if (songsTab === 'shared') {
+      body = r.shared.length ? `<ul class="items">${r.shared.map(songRow).join('')}</ul>`
+        : `<div class="empty">${q ? 'Ninguna coincide.' : 'Acá aparecen las canciones de otros que podés ver: las de listas que te compartieron y las que sus dueños hicieron visibles.'}</div>`;
+    } else {
+      body = r.others.length ? `<p class="hint">De estas canciones sólo se ve el título. Si querés una, pedile una copia al dueño.</p><ul class="items">${r.others.map(otherRow).join('')}</ul>`
+        : `<div class="empty">${q ? 'Ninguna coincide.' : 'No hay canciones de otros con el título visible.'}</div>`;
+    }
     view.innerHTML = `<div class="page">
-      <div class="page-head"><h1>Canciones <span class="count">${store.songs.size}</span></h1>
-        ${store.canEditSongs ? '<a class="btn" href="#/nueva">+ Nueva</a>' : ''}</div>
-      ${!store.songs.size ? `<div class="empty">${store.status === 'syncing' || store.status === 'idle' ? 'Cargando canciones…' : 'Todavía no hay canciones.'}</div>` : ''}
-      <ul class="items">${res.map(r => `<li><a class="item" href="${songHash(r.song.path)}"><span class="t">${esc(r.song.title)}${r.snippet ? `<small>${esc(r.snippet)}</small>` : ''}</span><span class="k">${esc(keyName(r.song.key, settings.notation))}</span></a></li>`).join('')}</ul>
+      <div class="page-head"><h1>Canciones</h1>
+        <div class="row">${songsTab === 'mine' && r.mine.length ? '<button class="btn small" data-act="vis">Quién las ve…</button>' : ''}<a class="btn" href="#/nueva">+ Nueva</a></div></div>
+      <div class="tabs">${tab('mine', 'Mías', nMine)}${tab('shared', 'Compartidas conmigo', nShared)}${tab('others', 'Otras', store.catalog.length)}</div>
+      ${!store.songs.size && !store.catalog.length && store.status !== 'ok' ? '<div class="empty">Cargando canciones…</div>' : body}
     </div>`;
   };
+  const onClick = async e => {
+    const t = e.target.closest('[data-tab]');
+    if (t) { songsTab = t.dataset.tab; render(); return; }
+    const rq = e.target.closest('[data-request]');
+    if (rq) {
+      rq.disabled = true;
+      try { await store.requestCopy(rq.dataset.request); toast('Pedido enviado. Cuando el dueño lo apruebe, la copia aparece en "Mías".'); }
+      catch (err) { toast(err.message); rq.disabled = false; }
+      return;
+    }
+    if (e.target.closest('[data-act=vis]')) bulkVisibility(tabResults().mine.map(x => x.song.path), q);
+  };
+  view.addEventListener('click', onClick);
   render();
   return {
     ownsSearch: true,
     onSearch: v => { q = v; render(); },
     onSearchEnter: () => { const r = store.search(q)[0]; if (r) location.hash = songHash(r.song.path); },
     onStoreChange: render,
+    leave: () => view.removeEventListener('click', onClick),
   };
+}
+
+async function bulkVisibility(slugs, q) {
+  const v = await openDialog((d, close) => {
+    d.innerHTML = `<h2>Quién puede ver estas canciones</h2>
+      <p class="hint" style="margin-top:0">Se aplica a ${q ? `las <b>${slugs.length}</b> canciones tuyas que coinciden con "${esc(q)}"` : `<b>todas</b> tus canciones (${slugs.length})`}. Para cambiar sólo algunas, escribí primero en el buscador de arriba.</p>
+      ${VIS_OPTIONS.map(([val, t]) => `<label class="row vis-opt"><input type="radio" name="v" value="${val}"> ${esc(t)}</label>`).join('')}
+      <p class="hint">Las canciones de las listas que compartas igual las ven las personas con las que compartiste la lista.</p>
+      <div class="actions"><button class="btn" data-x>Cancelar</button><button class="btn primary" data-ok>Aplicar</button></div>`;
+    d.querySelector('[data-x]').onclick = () => close(null);
+    d.querySelector('[data-ok]').onclick = () => close(d.querySelector('input:checked')?.value || null);
+  });
+  if (!v) return;
+  try { const n = await store.setVisibility(slugs, v); toast(`Listo: ${n} canciones actualizadas`); }
+  catch (e) { toast('No se pudo cambiar: ' + e.message); }
 }
 
 // ---------------------------------------------------------------- vista: canción
@@ -272,12 +333,13 @@ function songView(path, lpath = null, idx = 0) {
     const shown = transposedKeyName(k, semis, settings.notation);
     view.innerHTML = `<div class="song-page">
       <div class="song-title">${esc(entry.title)}</div>
+      ${entry.mine ? '' : `<div class="song-owner">de ${esc(entry.owner_name)} · sólo lectura</div>`}
       <div class="song-tools">
         <span class="keybox"><button data-act="down" aria-label="Bajar medio tono">−</button><button class="key" data-act="keys">${esc(shown || '—')}</button><button data-act="up" aria-label="Subir medio tono">+</button></span>
         <span class="orig">${semis ? `${semis > 0 ? '+' : ''}${semis} · original ${esc(keyName(k, settings.notation))} <button data-act="reset">volver</button>` : 'tono original'}</span>
         <span class="spacer"></span>
         <span class="size-btns row">${settings.fit ? '' : '<button data-act="fit" aria-label="Ajustar al ancho" title="Ajustar al ancho de la pantalla">↔</button>'}<button data-act="smaller" aria-label="Letra más chica">A−</button><button data-act="bigger" aria-label="Letra más grande">A+</button></span>
-        ${store.canEditSongs ? `<a class="btn small" href="#/editar/${encodeURIComponent(path)}">Editar</a>` : ''}
+        ${entry.mine ? `<a class="btn small" href="#/editar/${encodeURIComponent(path)}">Editar</a>` : '<button class="btn small" data-act="copy">Agregar a mis canciones</button>'}
         ${isDesktop || matchMedia('(min-width: 900px)').matches ? '<button class="btn small" data-act="print">Imprimir</button>' : ''}
         <button class="btn small" data-act="addlist">+ Lista</button>
       </div>
@@ -326,6 +388,11 @@ function songView(path, lpath = null, idx = 0) {
     }
     else if (a === 'print') window.print();
     else if (a === 'addlist') addToListDialog(path, semis);
+    else if (a === 'copy') {
+      if (!await confirmDialog(`¿Agregar "${entry.title}" a tus canciones? Se crea una copia tuya que podés editar; la de ${entry.owner_name} no cambia.`, 'Agregar')) return;
+      try { const slug = await store.copySong(path); toast('Agregada a tus canciones'); location.hash = songHash(slug); }
+      catch (err) { toast('No se pudo copiar: ' + err.message); }
+    }
   };
   view.addEventListener('click', onClick);
 
@@ -476,7 +543,7 @@ function listView(lpath) {
         const k = s ? transposedKeyName(s.key, it.semis || 0, settings.notation) : '';
         return `<li class="item" ${ed ? 'draggable="true"' : ''} data-i="${i}">
           <span class="num">${i + 1}</span>
-          <a class="t" href="${listHash(lpath, i)}" style="text-decoration:none">${it.label ? `<small class="label">${esc(it.label)}</small>` : ''}${esc(s?.title || '(canción borrada)')}${it.semis ? `<small>${it.semis > 0 ? '+' : ''}${it.semis} desde el original</small>` : ''}</a>
+          <a class="t" href="${listHash(lpath, i)}" style="text-decoration:none">${it.label ? `<small class="label">${esc(it.label)}</small>` : ''}${s ? esc(s.title) : list.titles[it.song] ? `${esc(list.titles[it.song])} <span class="hint">(no disponible para vos)</span>` : '(canción borrada)'}${it.semis ? `<small>${it.semis > 0 ? '+' : ''}${it.semis} desde el original</small>` : ''}</a>
           <span class="k">${esc(k)}</span>
           ${ed ? '<span class="acts"><button data-act="label" title="Etiqueta (ej: Entrada)">✎</button><button data-act="up" title="Subir">↑</button><button data-act="downi" title="Bajar">↓</button><button data-act="rm" title="Quitar">✕</button></span>' : ''}
         </li>`;
@@ -619,7 +686,7 @@ function usersView() {
     if (!alive) return;
     view.innerHTML = `<div class="page">
       <div class="page-head"><h1>Usuarios</h1><button class="btn primary" data-act="new">+ Nuevo usuario</button></div>
-      <p class="hint"><b>Administrador</b>: todo, incluso crear usuarios. <b>Editor</b>: carga y edita canciones. <b>Lector</b>: ve las canciones y arma sus propias listas.</p>
+      <p class="hint"><b>Administrador</b>: además de lo de cualquier usuario, crea usuarios y reinicia contraseñas. <b>Usuario</b>: tiene sus propias canciones y listas, y ve lo que otros le comparten.</p>
       <ul class="items">${users.map(u => `<li class="item user-row${u.disabled ? ' off' : ''}" data-id="${u.id}">
         <span class="t">${esc(u.name)}<small>${esc(u.username)}${u.disabled ? ' · desactivado' : ''}</small></span>
         <select data-role ${u.id === store.me.id ? 'disabled' : ''}>${Object.entries(ROLE_NAMES).map(([r, t]) => `<option value="${r}" ${r === u.role ? 'selected' : ''}>${t}</option>`).join('')}</select>
@@ -665,12 +732,44 @@ function newUserDialog() {
     d.innerHTML = `<h2>Nuevo usuario</h2><form>
       <label class="field"><span>Usuario (para ingresar; sin espacios ni acentos)</span><input name="username" autocapitalize="none" spellcheck="false" required autofocus placeholder="ej: maria.perez"></label>
       <label class="field"><span>Nombre (como lo ven los demás)</span><input name="name" required placeholder="ej: María"></label>
-      <label class="field"><span>Rol</span><select name="role"><option value="reader">Lector</option><option value="editor">Editor</option><option value="admin">Administrador</option></select></label>
+      <label class="field"><span>Rol</span><select name="role"><option value="editor">Usuario</option><option value="admin">Administrador</option></select></label>
       <label class="field"><span>Contraseña inicial (mínimo 6 caracteres; después la puede cambiar)</span><input name="password" type="text" required minlength="6"></label>
       <div class="actions"><button type="button" class="btn" data-x>Cancelar</button><button class="btn primary">Crear</button></div></form>`;
     d.querySelector('[data-x]').onclick = () => close(null);
     d.querySelector('form').onsubmit = e => { e.preventDefault(); close(Object.fromEntries(new FormData(e.target))); };
   });
+}
+
+// ---------------------------------------------------------------- vista: pedidos de copia
+
+function requestsView() {
+  const STATUS = { pending: 'esperando respuesta', approved: 'aprobado', denied: 'rechazado' };
+  const render = () => {
+    const { incoming, mine } = store.requests;
+    view.innerHTML = `<div class="page">
+      <h1>Pedidos</h1>
+      <h3>Te piden una copia</h3>
+      ${incoming.length ? `<ul class="items">${incoming.map(r => `<li class="item" data-id="${r.id}"><span class="t">${esc(r.title)}<small>${esc(r.requester_name)} · ${esc(new Date(r.created_at).toLocaleDateString('es-AR'))}</small></span>
+        <button class="btn small primary" data-act="approve">Dar copia</button><button class="btn small" data-act="deny">Rechazar</button></li>`).join('')}</ul>`
+        : '<p class="hint">No hay pedidos pendientes.</p>'}
+      <h3 style="margin-top:26px">Lo que pediste</h3>
+      ${mine.length ? `<ul class="items">${mine.map(r => `<li class="item"><span class="t">${esc(r.title)}<small>${STATUS[r.status]}</small></span>${r.status === 'approved' && r.copy_slug && store.songs.has(r.copy_slug) ? `<a class="btn small" href="${songHash(r.copy_slug)}">Abrir</a>` : ''}</li>`).join('')}</ul>`
+        : '<p class="hint">Todavía no pediste ninguna canción. Las que se pueden pedir están en Canciones → Otras.</p>'}
+      <p class="hint" style="margin-top:20px">Dar una copia le crea a esa persona su propia versión de la canción, que puede editar. Tu canción no cambia.</p>
+    </div>`;
+  };
+  const onClick = async e => {
+    const b = e.target.closest('[data-act]');
+    if (!b) return;
+    const id = +b.closest('[data-id]').dataset.id;
+    b.disabled = true;
+    try { await store.resolveRequest(id, b.dataset.act); toast(b.dataset.act === 'approve' ? 'Copia enviada' : 'Pedido rechazado'); }
+    catch (err) { toast(err.message); b.disabled = false; }
+  };
+  view.addEventListener('click', onClick);
+  render();
+  store.sync();
+  return { onStoreChange: render, leave: () => view.removeEventListener('click', onClick) };
 }
 
 // ---------------------------------------------------------------- vista: ajustes y cuenta

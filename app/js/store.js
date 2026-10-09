@@ -22,8 +22,9 @@ export class ApiStore extends EventTarget {
     this.apiBase = apiBase;
     this.token = localStorage.getItem(SESSION_KEY) || '';
     this.me = null;
-    this.since = 0;
-    this.rawSongs = {};  // slug -> {text, rev}
+    this.rawSongs = {};  // slug -> {text, rev, mine, owner_name, visibility}
+    this.catalog = [];   // canciones ajenas de las que sólo se ve el título
+    this.requests = { incoming: [], mine: [] };
     this.rawLists = [];  // tal como vienen del servidor
     this.songs = new Map();
     this.lists = new Map();
@@ -31,7 +32,7 @@ export class ApiStore extends EventTarget {
   }
 
   get loggedIn() { return !!this.token; }
-  get canEditSongs() { return this.me?.role === 'admin' || this.me?.role === 'editor'; }
+  get canEditSongs() { return !!this.me; } // cualquiera puede tener sus propias canciones
   get isAdmin() { return this.me?.role === 'admin'; }
 
   // ---------------------------------------------------------------- llamadas a la API
@@ -86,7 +87,7 @@ export class ApiStore extends EventTarget {
     try { await this.api('POST', '/api/logout'); } catch { /* igual se cierra localmente */ }
     this.clearSession();
     localStorage.removeItem(CACHE_KEY);
-    this.since = 0; this.rawSongs = {}; this.rawLists = [];
+    this.rawSongs = {}; this.rawLists = []; this.catalog = []; this.requests = { incoming: [], mine: [] };
     this.rebuild();
   }
 
@@ -94,7 +95,7 @@ export class ApiStore extends EventTarget {
   resetCacheIfOtherUser(me) {
     if (this.me && this.me.id !== me.id) {
       localStorage.removeItem(CACHE_KEY);
-      this.since = 0; this.rawSongs = {}; this.rawLists = [];
+      this.rawSongs = {}; this.rawLists = []; this.catalog = []; this.requests = { incoming: [], mine: [] };
     }
   }
 
@@ -103,26 +104,26 @@ export class ApiStore extends EventTarget {
   loadCache() {
     try {
       const c = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
-      if (c) { this.since = c.since || 0; this.rawSongs = c.songs || {}; this.rawLists = c.lists || []; this.me = c.me || null; }
+      if (c) { this.rawSongs = c.songs || {}; this.rawLists = c.lists || []; this.me = c.me || null; this.catalog = c.catalog || []; this.requests = c.requests || this.requests; }
     } catch { /* caché dañada: se vuelve a bajar */ }
     this.rebuild();
   }
 
   saveCache() {
-    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ since: this.since, songs: this.rawSongs, lists: this.rawLists, me: this.me })); }
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ songs: this.rawSongs, lists: this.rawLists, me: this.me, catalog: this.catalog, requests: this.requests })); }
     catch (e) { console.warn('No se pudo guardar la copia local', e); }
   }
 
   rebuild() {
     this.songs.clear();
-    for (const [slug, s] of Object.entries(this.rawSongs)) this.songs.set(slug, makeSongEntry(slug, s.text, s.rev));
+    for (const [slug, s] of Object.entries(this.rawSongs)) this.songs.set(slug, makeSongEntry(slug, s));
     this.lists.clear();
     for (const l of this.rawLists) {
       const path = `listas/${l.id}`;
       this.lists.set(path, {
         path, id: l.id, name: l.name, date: l.date || '', rev: l.rev,
         owner_id: l.owner_id, owner_name: l.owner_name, mine: l.owner_id === this.me?.id,
-        canEdit: l.can_edit, share_all: l.share_all, shares: l.shares || [],
+        canEdit: l.can_edit, share_all: l.share_all, shares: l.shares || [], titles: l.titles || {},
         items: l.items.map(it => ({ ...it, semis: l.semis?.[it.id] || 0 })),
       });
     }
@@ -141,14 +142,19 @@ export class ApiStore extends EventTarget {
     this.syncing = (async () => {
       this.setStatus('syncing');
       try {
-        const r = await this.api('GET', `/api/sync?since=${this.since}`);
+        // se mandan las versiones que ya tenemos: el servidor sólo devuelve el texto de lo que cambió
+        const have = Object.fromEntries(Object.entries(this.rawSongs).map(([slug, s]) => [slug, s.rev]));
+        const r = await this.api('POST', '/api/sync', { have });
+        const next = {};
         for (const s of r.songs) {
-          if (s.deleted) delete this.rawSongs[s.slug];
-          else this.rawSongs[s.slug] = { text: s.text, rev: s.rev };
+          const text = s.text ?? this.rawSongs[s.slug]?.text;
+          if (text !== undefined) next[s.slug] = { text, rev: s.rev, mine: s.mine, owner_name: s.owner_name, visibility: s.visibility };
         }
+        this.rawSongs = next;
         this.rawLists = r.lists;
+        this.catalog = r.catalog;
+        this.requests = r.requests;
         this.me = r.me;
-        this.since = r.now;
         this.saveCache();
         this.rebuild();
         this.setStatus('ok');
@@ -168,11 +174,11 @@ export class ApiStore extends EventTarget {
    * Guarda una canción (nueva si slug es null). Si otro la cambió mientras se editaba, la API
    * responde 409; con force=true se guarda igual.
    */
-  async saveSong(slug, text, { force = false, baseRev } = {}) {
+  async saveSong(slug, text, { force = false, baseRev, visibility } = {}) {
     let r;
-    if (slug) r = await this.api('PUT', `/api/songs/${slug}`, { text, baseRev: baseRev ?? this.rawSongs[slug]?.rev, force });
-    else r = await this.api('POST', '/api/songs', { text });
-    this.rawSongs[r.slug] = { text, rev: r.rev };
+    if (slug) r = await this.api('PUT', `/api/songs/${slug}`, { text, baseRev: baseRev ?? this.rawSongs[slug]?.rev, force, visibility });
+    else r = await this.api('POST', '/api/songs', { text, visibility });
+    this.rawSongs[r.slug] = { ...this.rawSongs[r.slug], text, rev: r.rev, mine: true, owner_name: this.me?.name, visibility: visibility || this.rawSongs[r.slug]?.visibility || 'private' };
     this.saveCache();
     this.rebuild();
     return r.slug;
@@ -186,6 +192,32 @@ export class ApiStore extends EventTarget {
   }
 
   songHistory(slug) { return this.api('GET', `/api/songs/${slug}/history`); }
+
+  /** Cambia quién puede ver estas canciones propias: 'private' | 'title' | 'public'. */
+  async setVisibility(slugs, visibility) {
+    const r = await this.api('PUT', '/api/songs/visibility', { slugs, visibility });
+    for (const s of slugs) if (this.rawSongs[s]?.mine) this.rawSongs[s].visibility = visibility;
+    this.saveCache();
+    this.rebuild();
+    return r.changed;
+  }
+
+  /** Copia propia de una canción ajena que se puede ver. Devuelve el slug de la copia. */
+  async copySong(slug) {
+    const r = await this.api('POST', `/api/songs/${slug}/copy`);
+    await this.sync();
+    return r.slug;
+  }
+
+  async requestCopy(slug) {
+    await this.api('POST', `/api/songs/${slug}/request`);
+    await this.sync();
+  }
+
+  async resolveRequest(id, action) {
+    await this.api('POST', `/api/requests/${id}/${action}`);
+    await this.sync();
+  }
 
   // ---------------------------------------------------------------- listas
 
@@ -266,13 +298,13 @@ export class ApiStore extends EventTarget {
 
 const newItemId = () => crypto.getRandomValues(new Uint32Array(1))[0].toString(36);
 
-function makeSongEntry(path, text, rev) {
+function makeSongEntry(path, { text, rev, mine, owner_name, visibility }) {
   let parsed;
   try { parsed = parseSong(text); } catch { parsed = { meta: {}, lines: [] }; }
   const title = parsed.meta.title || path;
   const plain = songPlainText(parsed);
   return {
-    path, text, rev, song: parsed, title,
+    path, text, rev, song: parsed, title, mine: mine !== false, owner_name, visibility: visibility || 'private',
     key: songKey(parsed),
     sortKey: fold(title).replace(/^[¡¿"'(]+/, ''),
     plain,
