@@ -1,7 +1,6 @@
 // Cancionero: app principal (rutas y vistas).
-import { Store } from './store.js';
-import { FsBackend, DevBackend, DropboxBackend } from './backends.js';
-import { DROPBOX_APP_KEY, APP_VERSION } from './config.js';
+import { ApiStore } from './store.js';
+import { APP_VERSION, API_BASE } from './config.js';
 import { renderSong, fitToWidth, separateChords } from './render.js';
 import { transposedKeyName } from './song.js';
 import { keyName, setAccidentals } from './chords.js';
@@ -9,11 +8,11 @@ import { esc, debounce, formatDate } from './util.js';
 import { toast, openDialog, confirmDialog, formDialog } from './ui.js';
 import { renderEditor } from './editor.js';
 
-// ---------------------------------------------------------------- ajustes
+// ---------------------------------------------------------------- ajustes (de cada dispositivo)
 
 const SETTINGS_KEY = 'cancionero.settings';
 const settings = Object.assign(
-  { notation: 'latin', accidentals: 'sharp', theme: 'light', songSize: 18, fit: true, wakeLock: true, dropboxAppKey: '' },
+  { notation: 'latin', accidentals: 'sharp', theme: 'light', songSize: 18, fit: true, wakeLock: true },
   (() => { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch { return {}; } })(),
 );
 const saveSettings = () => { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); applySettings(); };
@@ -26,45 +25,43 @@ function applySettings() {
   if (nt) nt.checked = settings.theme === 'dark';
 }
 
+const ROLE_NAMES = { admin: 'Administrador', editor: 'Editor', reader: 'Lector' };
+
 // ---------------------------------------------------------------- arranque
 
 const $ = s => document.querySelector(s);
 const view = $('#view');
-let store, backend, current = null;
+let store, current = null;
 const tempSemis = new Map(); // transporte temporal (fuera de listas) mientras la app está abierta
 
-const isElectron = !!window.cancioneroFS;
-const isLocalDev = !isElectron && /^(localhost|127\.0\.0\.1)$/.test(location.hostname) && !new URLSearchParams(location.search).has('dropbox');
+const isDesktop = location.protocol === 'app:';
+const isLocalDev = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
 
 async function boot() {
   applySettings();
-  backend = isElectron ? new FsBackend(window.cancioneroFS)
-    : isLocalDev ? new DevBackend()
-    : new DropboxBackend(settings.dropboxAppKey || DROPBOX_APP_KEY);
-  if (backend instanceof DropboxBackend) {
-    try { if (await backend.handleRedirect()) toast('Dropbox conectado'); }
-    catch (e) { toast(e.message, 5000); }
-  }
-  store = new Store(backend);
+  store = new ApiStore(API_BASE);
   store.loadCache();
-  store.addEventListener('change', () => current?.onStoreChange?.());
+  let lastRole = store.me?.role;
+  store.addEventListener('change', () => {
+    updateChrome();
+    // si el administrador le cambió el rol, rehacer la pantalla con los permisos nuevos
+    if (store.me?.role !== lastRole) { lastRole = store.me?.role; if (!current?.isDirty?.()) { route(); return; } }
+    current?.onStoreChange?.();
+  });
   store.addEventListener('status', updateSyncDot);
+  store.addEventListener('auth', () => { toast('La sesión venció. Volvé a ingresar.'); route(); });
   setupChrome();
   window.addEventListener('hashchange', route);
   route();
-  if (isElectron && !(await window.cancioneroFS.getRoot())) location.hash = '#/ajustes';
-  else if (canSync()) store.sync();
-  else if (!store.songs.size) location.hash = '#/ajustes';
-  window.addEventListener('focus', () => { if (canSync()) store.sync(); });
+  if (store.loggedIn) store.sync();
+  window.addEventListener('focus', () => store.sync());
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
-    if (canSync()) store.sync();
+    store.sync();
     if (current?.wake) requestWakeLock();
   });
-  if (!isElectron && 'serviceWorker' in navigator && !isLocalDev) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if (!isDesktop && !isLocalDev && 'serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 }
-
-const canSync = () => !(backend instanceof DropboxBackend) || backend.connected;
 
 function updateSyncDot() {
   const d = $('#syncDot');
@@ -75,6 +72,13 @@ function updateSyncDot() {
 
 // ---------------------------------------------------------------- barra superior, menú y buscador
 
+function updateChrome() {
+  document.body.classList.toggle('logged-out', !store.loggedIn);
+  $('#drawerUser').textContent = store.me ? `${store.me.name} · ${ROLE_NAMES[store.me.role] || ''}` : '';
+  $('#navUsers').hidden = !store.isAdmin;
+  $('#navNew').hidden = !store.canEditSongs;
+}
+
 function setupChrome() {
   const drawer = $('#drawer');
   $('#menuBtn').onclick = () => { drawer.hidden = false; };
@@ -83,7 +87,8 @@ function setupChrome() {
   const nt = $('#nightToggle');
   nt.checked = settings.theme === 'dark';
   nt.onchange = () => { settings.theme = nt.checked ? 'dark' : 'light'; saveSettings(); };
-  $('#syncBtn').onclick = async () => { drawer.hidden = true; if (canSync()) { await store.sync(); toast(store.status === 'ok' ? 'Listo' : 'Error al sincronizar'); } };
+  $('#syncBtn').onclick = async () => { drawer.hidden = true; await store.sync(); toast(store.status === 'ok' ? 'Listo' : 'Error al sincronizar'); };
+  updateChrome();
 
   const input = $('#search'), box = $('#searchResults');
   let sel = 0, results = [];
@@ -138,6 +143,7 @@ function route() {
   lastHash = location.hash;
   current?.leave?.();
   releaseWakeLock();
+  updateChrome();
   const h = decodeURIComponent(location.hash.slice(1) || '/');
   const parts = h.split('/').filter(Boolean);
   const search = $('#search');
@@ -146,16 +152,69 @@ function route() {
   document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('active', a.getAttribute('href') === '#' + h));
   window.scrollTo(0, 0);
 
-  if (!parts.length) current = songsView();
+  if (!store.loggedIn) current = loginView();
+  else if (!parts.length) current = songsView();
   else if (parts[0] === 'c') current = songView(parts.slice(1).join('/'));
   else if (parts[0] === 'listas') current = listsView();
   else if (parts[0] === 'lista' && parts.length >= 4) current = songView(null, parts.slice(1, 3).join('/'), +parts[3]);
   else if (parts[0] === 'lista') current = listView(parts.slice(1, 3).join('/'));
-  else if (parts[0] === 'editar') current = editorView(parts.slice(1).join('/'));
-  else if (parts[0] === 'nueva') current = editorView(null);
+  else if (parts[0] === 'editar' && store.canEditSongs) current = editorView(parts.slice(1).join('/'));
+  else if (parts[0] === 'nueva' && store.canEditSongs) current = editorView(null);
   else if (parts[0] === 'ajustes') current = settingsView();
+  else if (parts[0] === 'usuarios' && store.isAdmin) current = usersView();
   else current = songsView();
   search.placeholder = current.ownsSearch ? 'Filtrar canciones…' : 'Buscar canción…';
+}
+
+// ---------------------------------------------------------------- vista: ingreso
+
+function loginView() {
+  view.innerHTML = '<div class="page login"><div class="empty">Conectando…</div></div>';
+  let alive = true;
+  const draw = needsSetup => {
+    if (!alive) return;
+    view.innerHTML = `<div class="page login">
+      <div class="login-box">
+        <img src="icons/icon.svg" alt="" class="login-logo">
+        <h1>Cancionero</h1>
+        ${needsSetup ? '<p class="hint">Primera vez: creá el usuario <b>administrador</b>. Con ese usuario después vas a dar de alta a los demás integrantes del coro.</p>' : ''}
+        <form>
+          <label class="field"><span>Usuario</span><input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus></label>
+          ${needsSetup ? '<label class="field"><span>Tu nombre (como lo van a ver los demás)</span><input name="name" required></label>' : ''}
+          <label class="field"><span>Contraseña</span><input name="password" type="password" autocomplete="${needsSetup ? 'new-password' : 'current-password'}" required></label>
+          ${needsSetup ? '<label class="field"><span>Repetí la contraseña</span><input name="password2" type="password" autocomplete="new-password" required></label>' : ''}
+          <p class="login-error" hidden></p>
+          <button class="btn primary login-btn">${needsSetup ? 'Crear administrador' : 'Ingresar'}</button>
+        </form>
+        ${needsSetup ? '' : '<p class="hint">¿No tenés usuario o te olvidaste la contraseña? Pedíselo al administrador del cancionero.</p>'}
+      </div></div>`;
+    const form = view.querySelector('form'), errEl = view.querySelector('.login-error');
+    form.onsubmit = async e => {
+      e.preventDefault();
+      const f = Object.fromEntries(new FormData(form));
+      errEl.hidden = true;
+      if (needsSetup && f.password !== f.password2) { errEl.textContent = 'Las contraseñas no coinciden'; errEl.hidden = false; return; }
+      const btn = form.querySelector('button');
+      btn.disabled = true;
+      try {
+        if (needsSetup) await store.setup(f.username, f.name, f.password);
+        else await store.login(f.username, f.password);
+        await store.sync();
+        location.hash = '#/';
+        route();
+      } catch (err) {
+        errEl.textContent = err.message;
+        errEl.hidden = false;
+        btn.disabled = false;
+      }
+    };
+  };
+  store.needsSetup().then(draw).catch(() => {
+    if (!alive) return;
+    draw(false);
+    toast('No se pudo conectar con el servidor. Revisá la conexión a internet.', 4000);
+  });
+  return { leave: () => { alive = false; } };
 }
 
 // ---------------------------------------------------------------- vista: todas las canciones
@@ -166,8 +225,8 @@ function songsView() {
     const res = store.search(q);
     view.innerHTML = `<div class="page">
       <div class="page-head"><h1>Canciones <span class="count">${store.songs.size}</span></h1>
-        <a class="btn" href="#/nueva">+ Nueva</a></div>
-      ${!store.songs.size ? `<div class="empty">${store.status === 'syncing' ? 'Cargando canciones…' : 'Todavía no hay canciones. Revisá la conexión en Ajustes.'}</div>` : ''}
+        ${store.canEditSongs ? '<a class="btn" href="#/nueva">+ Nueva</a>' : ''}</div>
+      ${!store.songs.size ? `<div class="empty">${store.status === 'syncing' || store.status === 'idle' ? 'Cargando canciones…' : 'Todavía no hay canciones.'}</div>` : ''}
       <ul class="items">${res.map(r => `<li><a class="item" href="${songHash(r.song.path)}"><span class="t">${esc(r.song.title)}${r.snippet ? `<small>${esc(r.snippet)}</small>` : ''}</span><span class="k">${esc(keyName(r.song.key, settings.notation))}</span></a></li>`).join('')}</ul>
     </div>`;
   };
@@ -183,15 +242,16 @@ function songsView() {
 // ---------------------------------------------------------------- vista: canción
 
 function songView(path, lpath = null, idx = 0) {
-  const list = lpath ? store.lists.get(lpath) : null;
+  let list = lpath ? store.lists.get(lpath) : null;
   if (lpath && !list) { view.innerHTML = `<div class="page empty">Lista no encontrada</div>`; return { onStoreChange: () => route() }; }
-  const item = list ? list.items[idx] : null;
+  let item = list ? list.items[idx] : null;
   if (list) path = item?.song;
   let semis = item ? (item.semis || 0) : (tempSemis.get(path) || 0);
   let entry = store.songs.get(path);
 
+  // el tono dentro de una lista es personal: se guarda sólo para este usuario
   const saveListSemis = debounce(async () => {
-    try { await store.saveList(list); } catch (e) { toast('No se pudo guardar el tono en la lista'); }
+    try { await store.saveListSemis(list); } catch (e) { toast('No se pudo guardar el tono en la lista'); }
   }, 800);
 
   const setSemis = s => {
@@ -217,8 +277,8 @@ function songView(path, lpath = null, idx = 0) {
         <span class="orig">${semis ? `${semis > 0 ? '+' : ''}${semis} · original ${esc(keyName(k, settings.notation))} <button data-act="reset">volver</button>` : 'tono original'}</span>
         <span class="spacer"></span>
         <span class="size-btns row">${settings.fit ? '' : '<button data-act="fit" aria-label="Ajustar al ancho" title="Ajustar al ancho de la pantalla">↔</button>'}<button data-act="smaller" aria-label="Letra más chica">A−</button><button data-act="bigger" aria-label="Letra más grande">A+</button></span>
-        <a class="btn small" href="#/editar/${encodeURIComponent(path)}">Editar</a>
-        ${isElectron || matchMedia('(min-width: 900px)').matches ? '<button class="btn small" data-act="print">Imprimir</button>' : ''}
+        ${store.canEditSongs ? `<a class="btn small" href="#/editar/${encodeURIComponent(path)}">Editar</a>` : ''}
+        ${isDesktop || matchMedia('(min-width: 900px)').matches ? '<button class="btn small" data-act="print">Imprimir</button>' : ''}
         <button class="btn small" data-act="addlist">+ Lista</button>
       </div>
       <div class="song${settings.fit ? ' fit' : ''}">${renderSong(entry.song, { semis, notation: settings.notation, origKey: k })}</div>
@@ -287,7 +347,14 @@ function songView(path, lpath = null, idx = 0) {
   if (settings.wakeLock) requestWakeLock();
   return {
     wake: settings.wakeLock,
-    onStoreChange: () => { if (!list || store.lists.get(lpath)) render(); },
+    onStoreChange: () => {
+      if (!list) { render(); return; }
+      // la lista se reconstruye al sincronizar: tomar la versión nueva
+      list = store.lists.get(lpath);
+      if (!list) return;
+      item = list.items[idx];
+      render();
+    },
     leave: () => { window.removeEventListener('resize', onResize); view.removeEventListener('click', onClick); view.removeEventListener('touchstart', ts); view.removeEventListener('touchend', te); },
   };
 }
@@ -310,11 +377,10 @@ function pickKey(origKey, semis) {
 }
 
 async function addToListDialog(path, semis) {
-  const lists = store.listList();
-  const today = new Date().toISOString().slice(0, 10);
+  const lists = store.listList().filter(l => l.canEdit);
   const chosen = await openDialog((d, close) => {
     d.innerHTML = `<h2>Agregar a una lista</h2>
-      <ul class="items">${lists.map(l => `<li class="item" data-p="${esc(l.path)}"><span class="t">${esc(l.name)}<small>${esc(formatDate(l.date))}</small></span><span class="count">${l.items.length}</span></li>`).join('') || '<div class="empty">No hay listas todavía</div>'}</ul>
+      <ul class="items">${lists.map(l => `<li class="item" data-p="${esc(l.path)}"><span class="t">${esc(l.name)}<small>${esc(formatDate(l.date))}${l.mine ? '' : ' · de ' + esc(l.owner_name)}</small></span><span class="count">${l.items.length}</span></li>`).join('') || '<div class="empty">No hay listas todavía</div>'}</ul>
       <div class="actions"><button class="btn" data-x>Cancelar</button><button class="btn primary" data-new>+ Nueva lista</button></div>`;
     d.onclick = e => {
       if (e.target.closest('[data-x]')) close(null);
@@ -325,13 +391,22 @@ async function addToListDialog(path, semis) {
   if (!chosen) return;
   let list;
   if (chosen === 'new') {
-    const f = await formDialog('Nueva lista', [{ name: 'name', label: 'Nombre', placeholder: 'Misa del sábado' }, { name: 'date', label: 'Fecha', type: 'date', value: nextSaturday() || today }], 'Crear');
-    if (!f || !f.name.trim()) return;
-    list = { name: f.name.trim(), date: f.date, items: [] };
+    const f = await newListDialog();
+    if (!f) return;
+    list = { name: f.name, date: f.date, items: [] };
   } else list = store.lists.get(chosen);
   list.items.push({ song: path, semis });
-  try { await store.saveList(list); toast(`Agregada a "${list.name}"`); }
-  catch (e) { toast('No se pudo guardar: ' + e.message); }
+  try {
+    await store.saveList(list);
+    if (list.id && semis) await store.saveListSemis(list);
+    toast(`Agregada a "${list.name}"`);
+  } catch (e) { toast('No se pudo guardar: ' + e.message); }
+}
+
+async function newListDialog() {
+  const f = await formDialog('Nueva lista', [{ name: 'name', label: 'Nombre', placeholder: 'Misa del sábado' }, { name: 'date', label: 'Fecha', type: 'date', value: nextSaturday() }], 'Crear');
+  if (!f || !f.name.trim()) return null;
+  return { name: f.name.trim(), date: f.date };
 }
 
 function nextSaturday() {
@@ -342,13 +417,21 @@ function nextSaturday() {
 
 // ---------------------------------------------------------------- vista: listas
 
+function shareLabel(l) {
+  if (!l.mine) return `de ${l.owner_name}${l.canEdit ? '' : ' · sólo lectura'}`;
+  if (l.share_all === 2) return 'compartida con todos (pueden editar)';
+  if (l.share_all === 1) return 'compartida con todos';
+  if (l.shares.length) return `compartida con ${l.shares.length} persona${l.shares.length > 1 ? 's' : ''}`;
+  return 'personal';
+}
+
 function listsView() {
   const render = () => {
     const today = new Date().toISOString().slice(0, 10);
     const all = store.listList();
     const upcoming = all.filter(l => (l.date || '') >= today).reverse();
     const past = all.filter(l => (l.date || '') < today);
-    const li = l => `<li><a class="item" href="${listHash(l.path)}"><span class="t">${esc(l.name)}<small>${esc(formatDate(l.date))}</small></span><span class="count">${l.items.length} canc.</span></a></li>`;
+    const li = l => `<li><a class="item" href="${listHash(l.path)}"><span class="t">${esc(l.name)}<small>${esc(formatDate(l.date))} · ${esc(shareLabel(l))}</small></span><span class="count">${l.items.length} canc.</span></a></li>`;
     view.innerHTML = `<div class="page">
       <div class="page-head"><h1>Listas</h1><button class="btn primary" data-new>+ Nueva lista</button></div>
       ${!all.length ? '<div class="empty">Armá una lista para la próxima misa o evento: tocá "+ Nueva lista".</div>' : ''}
@@ -356,10 +439,10 @@ function listsView() {
       ${past.length ? `<h3 class="count">Anteriores</h3><ul class="items">${past.map(li).join('')}</ul>` : ''}
     </div>`;
     view.querySelector('[data-new]').onclick = async () => {
-      const f = await formDialog('Nueva lista', [{ name: 'name', label: 'Nombre', placeholder: 'Misa del sábado' }, { name: 'date', label: 'Fecha', type: 'date', value: nextSaturday() }], 'Crear');
-      if (!f || !f.name.trim()) return;
+      const f = await newListDialog();
+      if (!f) return;
       try {
-        const p = await store.saveList({ name: f.name.trim(), date: f.date, items: [] });
+        const p = await store.saveList({ name: f.name, date: f.date, items: [] });
         location.hash = listHash(p);
       } catch (e) { toast('No se pudo crear: ' + e.message); }
     };
@@ -375,21 +458,27 @@ function listView(lpath) {
   const render = () => {
     const list = store.lists.get(lpath);
     if (!list) { view.innerHTML = `<div class="page empty">Lista no encontrada. <a href="#/listas">Volver</a></div>`; return; }
+    const ed = list.canEdit;
     view.innerHTML = `<div class="page setlist">
-      <div class="page-head"><div><h1 style="margin-bottom:2px">${esc(list.name)}</h1><div class="count">${esc(formatDate(list.date))}</div></div>
-        <div class="row"><button class="btn small" data-act="edit">Renombrar</button><button class="btn small danger" data-act="del">Eliminar</button></div></div>
+      <div class="page-head"><div><h1 style="margin-bottom:2px">${esc(list.name)}</h1><div class="count">${esc(formatDate(list.date))} · ${esc(shareLabel(list))}</div></div>
+        <div class="row">
+          ${list.mine ? '<button class="btn small" data-act="share">Compartir</button>' : ''}
+          ${ed ? '<button class="btn small" data-act="edit">Renombrar</button>' : ''}
+          ${list.mine || store.isAdmin ? '<button class="btn small danger" data-act="del">Eliminar</button>' : ''}
+        </div></div>
       <div class="row" style="margin:14px 0 6px">
-        <button class="btn primary" data-act="add">+ Agregar canciones</button>
+        ${ed ? '<button class="btn primary" data-act="add">+ Agregar canciones</button>' : ''}
         ${list.items.length ? `<a class="btn" href="${listHash(lpath, 0)}">▶ Empezar</a>` : ''}
       </div>
+      ${list.mine ? '' : '<p class="hint">El tono que elijas en cada canción es sólo para vos: no le cambia nada a los demás.</p>'}
       <ul class="items">${list.items.map((it, i) => {
         const s = store.songs.get(it.song);
         const k = s ? transposedKeyName(s.key, it.semis || 0, settings.notation) : '';
-        return `<li class="item" draggable="true" data-i="${i}">
+        return `<li class="item" ${ed ? 'draggable="true"' : ''} data-i="${i}">
           <span class="num">${i + 1}</span>
-          <a class="t" href="${listHash(lpath, i)}" style="text-decoration:none">${it.label ? `<small style="font-weight:700;color:#000">${esc(it.label)}</small>` : ''}${esc(s?.title || '(canción borrada)')}${it.semis ? `<small>${it.semis > 0 ? '+' : ''}${it.semis} desde el original</small>` : ''}</a>
+          <a class="t" href="${listHash(lpath, i)}" style="text-decoration:none">${it.label ? `<small class="label">${esc(it.label)}</small>` : ''}${esc(s?.title || '(canción borrada)')}${it.semis ? `<small>${it.semis > 0 ? '+' : ''}${it.semis} desde el original</small>` : ''}</a>
           <span class="k">${esc(k)}</span>
-          <span class="acts"><button data-act="label" title="Etiqueta (ej: Entrada)">✎</button><button data-act="up" title="Subir">↑</button><button data-act="downi" title="Bajar">↓</button><button data-act="rm" title="Quitar">✕</button></span>
+          ${ed ? '<span class="acts"><button data-act="label" title="Etiqueta (ej: Entrada)">✎</button><button data-act="up" title="Subir">↑</button><button data-act="downi" title="Bajar">↓</button><button data-act="rm" title="Quitar">✕</button></span>' : ''}
         </li>`;
       }).join('') || '<div class="empty">Lista vacía</div>'}</ul>
     </div>`;
@@ -402,14 +491,16 @@ function listView(lpath) {
     const i = +b.closest('[data-i]')?.dataset.i;
     const a = b.dataset.act;
     if (a === 'add') return addSongsDialog(list, save);
+    if (a === 'share') return shareDialog(list);
     if (a === 'edit') {
       const f = await formDialog('Editar lista', [{ name: 'name', label: 'Nombre', value: list.name }, { name: 'date', label: 'Fecha', type: 'date', value: list.date }]);
       if (f && f.name.trim()) { list.name = f.name.trim(); list.date = f.date; save(list); }
       return;
     }
     if (a === 'del') {
-      if (await confirmDialog(`¿Eliminar la lista "${list.name}"?`, 'Eliminar', true)) {
-        try { await store.remove(lpath); location.hash = '#/listas'; } catch (err) { toast(err.message); }
+      const extra = list.mine && (list.share_all || list.shares.length) ? ' También desaparece para las personas con las que la compartiste.' : '';
+      if (await confirmDialog(`¿Eliminar la lista "${list.name}"?${extra}`, 'Eliminar', true)) {
+        try { await store.deleteList(list); location.hash = '#/listas'; } catch (err) { toast(err.message); }
       }
       return;
     }
@@ -461,7 +552,7 @@ function addSongsDialog(list, save) {
   let added = 0;
   return openDialog((d, close) => {
     d.innerHTML = `<h2>Agregar canciones a "${esc(list.name)}"</h2>
-      <input class="field" style="width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;font-size:16px" placeholder="Buscar…" autofocus>
+      <input class="field" style="width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;font-size:16px;background:var(--bg)" placeholder="Buscar…" autofocus>
       <ul class="items" style="max-height:50vh;overflow:auto"></ul>
       <div class="actions"><span class="hint" style="margin-right:auto" data-n></span><button class="btn primary" data-x>Listo</button></div>`;
     const input = d.querySelector('input'), ul = d.querySelector('ul');
@@ -486,66 +577,145 @@ function addSongsDialog(list, save) {
   });
 }
 
+async function shareDialog(list) {
+  let users;
+  try { users = (await store.directory()).filter(u => u.id !== store.me.id); }
+  catch (e) { toast('No se pudo cargar la lista de usuarios: ' + e.message); return; }
+  const cur = new Map(list.shares.map(s => [s.user_id, s.can_edit ? 2 : 1]));
+  const opt = (v, sel) => ['No', 'Puede ver', 'Puede editar'].map((t, i) => `<option value="${i}" ${i === sel ? 'selected' : ''}>${t}</option>`).join('');
+  const res = await openDialog((d, close) => {
+    d.innerHTML = `<h2>Compartir "${esc(list.name)}"</h2>
+      <label class="field"><span><b>Todo el coro</b> (incluye a los que se sumen después)</span><select name="all">${opt(0, list.share_all)}</select></label>
+      ${users.length ? `<p class="hint" style="margin:14px 0 6px">O elegí personas:</p>
+      ${users.map(u => `<label class="field share-row"><span>${esc(u.name)} <small>(${esc(u.username)})</small></span><select data-u="${u.id}">${opt(0, cur.get(u.id) || 0)}</select></label>`).join('')}`
+      : '<p class="hint">Todavía no hay otros usuarios. Los crea el administrador desde el menú → Usuarios.</p>'}
+      <p class="hint">"Puede editar" = agregar, quitar y ordenar canciones. Borrar la lista sólo puede quien la creó. El tono de cada uno es personal.</p>
+      <div class="actions"><button class="btn" data-x>Cancelar</button><button class="btn primary" data-ok>Guardar</button></div>`;
+    d.querySelector('[data-x]').onclick = () => close(null);
+    d.querySelector('[data-ok]').onclick = () => close({
+      all: +d.querySelector('[name=all]').value,
+      shares: [...d.querySelectorAll('[data-u]')].filter(s => +s.value > 0).map(s => ({ user_id: +s.dataset.u, can_edit: +s.value === 2 })),
+    });
+  });
+  if (!res) return;
+  try { await store.shareList(list, res.all, res.shares); toast('Listo'); }
+  catch (e) { toast('No se pudo compartir: ' + e.message); }
+}
+
 // ---------------------------------------------------------------- vista: editor
 
 function editorView(path) {
   return renderEditor(view, { store, path, settings, onSaved: p => { location.hash = songHash(p); }, onCancel: () => history.back() });
 }
 
-// ---------------------------------------------------------------- vista: ajustes
+// ---------------------------------------------------------------- vista: usuarios (administrador)
+
+function usersView() {
+  let alive = true;
+  const render = async () => {
+    let users;
+    try { users = await store.listUsers(); }
+    catch (e) { if (alive) view.innerHTML = `<div class="page empty">No se pudieron cargar los usuarios: ${esc(e.message)}</div>`; return; }
+    if (!alive) return;
+    view.innerHTML = `<div class="page">
+      <div class="page-head"><h1>Usuarios</h1><button class="btn primary" data-act="new">+ Nuevo usuario</button></div>
+      <p class="hint"><b>Administrador</b>: todo, incluso crear usuarios. <b>Editor</b>: carga y edita canciones. <b>Lector</b>: ve las canciones y arma sus propias listas.</p>
+      <ul class="items">${users.map(u => `<li class="item user-row${u.disabled ? ' off' : ''}" data-id="${u.id}">
+        <span class="t">${esc(u.name)}<small>${esc(u.username)}${u.disabled ? ' · desactivado' : ''}</small></span>
+        <select data-role ${u.id === store.me.id ? 'disabled' : ''}>${Object.entries(ROLE_NAMES).map(([r, t]) => `<option value="${r}" ${r === u.role ? 'selected' : ''}>${t}</option>`).join('')}</select>
+        <button class="btn small" data-act="pass">Contraseña</button>
+        ${u.id === store.me.id ? '' : `<button class="btn small ${u.disabled ? '' : 'danger'}" data-act="toggle">${u.disabled ? 'Activar' : 'Desactivar'}</button>`}
+      </li>`).join('')}</ul>
+    </div>`;
+  };
+  const act = async (fn, okMsg) => {
+    try { await fn(); toast(okMsg); render(); } catch (e) { toast(e.message, 4000); }
+  };
+  const onClick = async e => {
+    const b = e.target.closest('[data-act]');
+    if (!b) return;
+    const id = +b.closest('[data-id]')?.dataset.id;
+    const a = b.dataset.act;
+    if (a === 'new') {
+      const u = await newUserDialog();
+      if (u) act(() => store.createUser(u), `Usuario "${u.username}" creado. Pasale el usuario y la contraseña.`);
+    } else if (a === 'pass') {
+      const f = await formDialog('Nueva contraseña', [{ name: 'password', label: 'Contraseña nueva (mínimo 6 caracteres)', type: 'text' }], 'Cambiar');
+      if (f?.password) act(() => store.updateUser(id, { password: f.password }), 'Contraseña cambiada. Se cerraron sus sesiones abiertas.');
+    } else if (a === 'toggle') {
+      const off = !b.closest('.off');
+      if (!off || await confirmDialog('¿Desactivar este usuario? No va a poder entrar hasta que lo actives de nuevo.', 'Desactivar', true)) {
+        act(() => store.updateUser(id, { disabled: off }), off ? 'Usuario desactivado' : 'Usuario activado');
+      }
+    }
+  };
+  const onChange = e => {
+    const sel = e.target.closest('[data-role]');
+    if (!sel) return;
+    act(() => store.updateUser(+sel.closest('[data-id]').dataset.id, { role: sel.value }), 'Rol cambiado');
+  };
+  view.addEventListener('click', onClick);
+  view.addEventListener('change', onChange);
+  render();
+  return { leave: () => { alive = false; view.removeEventListener('click', onClick); view.removeEventListener('change', onChange); } };
+}
+
+function newUserDialog() {
+  return openDialog((d, close) => {
+    d.innerHTML = `<h2>Nuevo usuario</h2><form>
+      <label class="field"><span>Usuario (para ingresar; sin espacios ni acentos)</span><input name="username" autocapitalize="none" spellcheck="false" required autofocus placeholder="ej: maria.perez"></label>
+      <label class="field"><span>Nombre (como lo ven los demás)</span><input name="name" required placeholder="ej: María"></label>
+      <label class="field"><span>Rol</span><select name="role"><option value="reader">Lector</option><option value="editor">Editor</option><option value="admin">Administrador</option></select></label>
+      <label class="field"><span>Contraseña inicial (mínimo 6 caracteres; después la puede cambiar)</span><input name="password" type="text" required minlength="6"></label>
+      <div class="actions"><button type="button" class="btn" data-x>Cancelar</button><button class="btn primary">Crear</button></div></form>`;
+    d.querySelector('[data-x]').onclick = () => close(null);
+    d.querySelector('form').onsubmit = e => { e.preventDefault(); close(Object.fromEntries(new FormData(e.target))); };
+  });
+}
+
+// ---------------------------------------------------------------- vista: ajustes y cuenta
 
 function settingsView() {
-  const render = async () => {
-    let storage = '';
-    if (backend instanceof FsBackend) {
-      const root = await window.cancioneroFS.getRoot();
-      storage = `<p class="hint">Las canciones se leen y guardan en esta carpeta (sincronizada por Dropbox):</p>
-        <p><code>${esc(root || '(sin elegir)')}</code></p>
-        <button class="btn" data-act="choose">Elegir carpeta…</button>`;
-    } else if (backend instanceof DevBackend) {
-      storage = `<p class="hint">Modo desarrollo: se usa la carpeta <code>data/</code> del proyecto.</p>`;
-    } else {
-      storage = backend.connected
-        ? `<p>✅ Conectado a Dropbox.</p><button class="btn danger" data-act="disconnect">Desconectar</button>`
-        : `<p class="hint">Conectá tu Dropbox para traer las canciones y listas.</p>
-           <label class="field"><span>App key de Dropbox</span><input name="appkey" value="${esc(settings.dropboxAppKey || DROPBOX_APP_KEY)}" placeholder="ej: a1b2c3d4e5f6g7h"></label>
-           <button class="btn primary" data-act="connect">Conectar con Dropbox</button>`;
-    }
-    view.innerHTML = `<div class="page">
-      <h1>Ajustes</h1>
-      <label class="field"><span>Notación de acordes</span>
-        <select name="notation"><option value="latin">Latina (DO, RE, MI…)</option><option value="us">Americana (C, D, E…)</option></select></label>
-      <label class="field"><span>Alteraciones</span>
-        <select name="accidentals"><option value="sharp">Sostenidos (DO#, FA#, LA#…)</option><option value="flat">Bemoles (REb, SOLb, SIb…)</option><option value="auto">Automático según el tono</option></select></label>
-      <label class="row" style="margin-bottom:12px"><input name="night" type="checkbox" ${settings.theme === 'dark' ? 'checked' : ''}> Modo noche (fondo negro, letras blancas)</label>
-      <label class="field"><span>Tamaño de letra de las canciones: <b data-size>${settings.songSize}px</b></span>
-        <input name="songSize" type="range" min="12" max="40" step="1" value="${settings.songSize}"></label>
-      <label class="row" style="margin-bottom:18px"><input name="wakeLock" type="checkbox" ${settings.wakeLock ? 'checked' : ''}> Mantener la pantalla encendida al ver una canción</label>
-      <h3>Almacenamiento</h3>
-      ${storage}
-      <p class="hint" style="margin-top:24px">${store.songs.size} canciones · ${store.lists.size} listas · versión <span data-version></span></p>
-    </div>`;
-    view.querySelector('[name=notation]').value = settings.notation;
-    view.querySelector('[name=notation]').onchange = e => { settings.notation = e.target.value; saveSettings(); };
-    view.querySelector('[name=accidentals]').value = settings.accidentals;
-    view.querySelector('[name=accidentals]').onchange = e => { settings.accidentals = e.target.value; saveSettings(); };
-    view.querySelector('[name=night]').onchange = e => { settings.theme = e.target.checked ? 'dark' : 'light'; saveSettings(); };
-    view.querySelector('[data-version]').textContent = APP_VERSION;
-    view.querySelector('[name=songSize]').oninput = e => { settings.songSize = +e.target.value; view.querySelector('[data-size]').textContent = settings.songSize + 'px'; saveSettings(); };
-    view.querySelector('[name=wakeLock]').onchange = e => { settings.wakeLock = e.target.checked; saveSettings(); };
-    view.querySelector('[data-act=choose]')?.addEventListener('click', async () => {
-      if (await window.cancioneroFS.chooseRoot()) { store.files = {}; store.saveCache(); store.rebuild(); await store.sync(); render(); }
-    });
-    view.querySelector('[data-act=disconnect]')?.addEventListener('click', () => { backend.disconnect(); render(); });
-    view.querySelector('[data-act=connect]')?.addEventListener('click', async () => {
-      const key = view.querySelector('[name=appkey]').value.trim();
-      settings.dropboxAppKey = key;
-      saveSettings();
-      backend.appKey = key;
-      try { await backend.connect(); } catch (e) { toast(e.message, 4000); }
-    });
+  view.innerHTML = `<div class="page">
+    <h1>Ajustes</h1>
+    <h3>Mi cuenta</h3>
+    <p>${esc(store.me?.name || '')} <span class="hint">(${esc(store.me?.username || '')} · ${esc(ROLE_NAMES[store.me?.role] || '')})</span></p>
+    <div class="row" style="margin-bottom:22px"><button class="btn" data-act="pass">Cambiar mi contraseña</button><button class="btn danger" data-act="logout">Cerrar sesión</button></div>
+    <h3>Pantalla</h3>
+    <label class="field"><span>Notación de acordes</span>
+      <select name="notation"><option value="latin">Latina (DO, RE, MI…)</option><option value="us">Americana (C, D, E…)</option></select></label>
+    <label class="field"><span>Alteraciones</span>
+      <select name="accidentals"><option value="sharp">Sostenidos (DO#, FA#, LA#…)</option><option value="flat">Bemoles (REb, SOLb, SIb…)</option><option value="auto">Automático según el tono</option></select></label>
+    <label class="row" style="margin-bottom:12px"><input name="night" type="checkbox" ${settings.theme === 'dark' ? 'checked' : ''}> Modo noche (fondo negro, letras blancas)</label>
+    <label class="row" style="margin-bottom:18px"><input name="wakeLock" type="checkbox" ${settings.wakeLock ? 'checked' : ''}> Mantener la pantalla encendida al ver una canción</label>
+    <p class="hint" style="margin-top:24px">${store.songs.size} canciones · ${store.lists.size} listas · versión ${esc(APP_VERSION)}</p>
+  </div>`;
+  view.querySelector('[name=notation]').value = settings.notation;
+  view.querySelector('[name=notation]').onchange = e => { settings.notation = e.target.value; saveSettings(); };
+  view.querySelector('[name=accidentals]').value = settings.accidentals;
+  view.querySelector('[name=accidentals]').onchange = e => { settings.accidentals = e.target.value; saveSettings(); };
+  view.querySelector('[name=night]').onchange = e => { settings.theme = e.target.checked ? 'dark' : 'light'; saveSettings(); };
+  view.querySelector('[name=wakeLock]').onchange = e => { settings.wakeLock = e.target.checked; saveSettings(); };
+  view.querySelector('[data-act=logout]').onclick = async () => {
+    if (!await confirmDialog('¿Cerrar sesión en este dispositivo?', 'Cerrar sesión')) return;
+    await store.logout();
+    location.hash = '#/';
+    route();
   };
-  render();
+  view.querySelector('[data-act=pass]').onclick = async () => {
+    const f = await openDialog((d, close) => {
+      d.innerHTML = `<h2>Cambiar mi contraseña</h2><form>
+        <label class="field"><span>Contraseña actual</span><input name="old" type="password" autocomplete="current-password" required autofocus></label>
+        <label class="field"><span>Contraseña nueva (mínimo 6 caracteres)</span><input name="new" type="password" autocomplete="new-password" required minlength="6"></label>
+        <label class="field"><span>Repetí la nueva</span><input name="new2" type="password" autocomplete="new-password" required></label>
+        <div class="actions"><button type="button" class="btn" data-x>Cancelar</button><button class="btn primary">Cambiar</button></div></form>`;
+      d.querySelector('[data-x]').onclick = () => close(null);
+      d.querySelector('form').onsubmit = e => { e.preventDefault(); close(Object.fromEntries(new FormData(e.target))); };
+    });
+    if (!f) return;
+    if (f.new !== f.new2) { toast('Las contraseñas nuevas no coinciden'); return; }
+    try { await store.changePassword(f.old, f.new); toast('Contraseña cambiada'); } catch (e) { toast(e.message, 4000); }
+  };
   return {};
 }
 

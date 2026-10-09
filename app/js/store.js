@@ -1,42 +1,130 @@
-// Almacén de canciones y listas, con caché local para funcionar sin conexión.
+// Almacén de canciones y listas: habla con la API del servidor y guarda una copia local para que la
+// app funcione sin conexión con lo último que se descargó.
 //
-// Estructura de archivos (igual en Dropbox y en la carpeta local de la PC):
-//   canciones/<slug>.cho     una canción en formato ChordPro
-//   listas/<id>.json         {name, date, items: [{song: 'canciones/x.cho', semis: 0}]}
+// Identificadores que usa la interfaz:
+//   canción -> su "slug" (ej: "a-tanto-amor")
+//   lista   -> "listas/<id>"
+// Cada ítem de lista es {id, song, label, semis}; "semis" (el tono) es personal de cada usuario.
 
 import { parseSong, songKey, songPlainText } from './song.js';
-import { fold, slugify } from './util.js';
+import { fold } from './util.js';
 
-export class Store extends EventTarget {
-  constructor(backend) {
+const SESSION_KEY = 'cancionero.session';
+const CACHE_KEY = 'cancionero.v2.cache';
+
+export class ApiError extends Error {
+  constructor(status, data) { super(data?.error || `Error ${status}`); this.status = status; this.data = data || {}; }
+}
+
+export class ApiStore extends EventTarget {
+  constructor(apiBase) {
     super();
-    this.backend = backend;
-    this.cacheKey = `cancionero.cache.${backend.id}`;
-    this.files = {};   // path -> {rev, text}
+    this.apiBase = apiBase;
+    this.token = localStorage.getItem(SESSION_KEY) || '';
+    this.me = null;
+    this.since = 0;
+    this.rawSongs = {};  // slug -> {text, rev}
+    this.rawLists = [];  // tal como vienen del servidor
     this.songs = new Map();
     this.lists = new Map();
     this.status = 'idle';
   }
 
+  get loggedIn() { return !!this.token; }
+  get canEditSongs() { return this.me?.role === 'admin' || this.me?.role === 'editor'; }
+  get isAdmin() { return this.me?.role === 'admin'; }
+
+  // ---------------------------------------------------------------- llamadas a la API
+
+  async api(method, path, body) {
+    let r;
+    try {
+      r = await fetch(this.apiBase + path, {
+        method,
+        headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}) },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+    } catch {
+      throw new ApiError(0, { error: 'Sin conexión con el servidor' });
+    }
+    const data = await r.json().catch(() => ({}));
+    if (r.status === 401 && this.token && path !== '/api/login') {
+      this.clearSession();
+      this.dispatchEvent(new Event('auth'));
+    }
+    if (!r.ok) throw new ApiError(r.status, data);
+    return data;
+  }
+
+  setSession({ token, me }) {
+    this.token = token;
+    this.me = me;
+    localStorage.setItem(SESSION_KEY, token);
+  }
+
+  clearSession() {
+    this.token = '';
+    this.me = null;
+    localStorage.removeItem(SESSION_KEY);
+  }
+
+  async needsSetup() { return (await this.api('GET', '/api/status')).needsSetup; }
+
+  async login(username, password) {
+    const r = await this.api('POST', '/api/login', { username, password });
+    this.resetCacheIfOtherUser(r.me);
+    this.setSession(r);
+  }
+
+  async setup(username, name, password) {
+    const r = await this.api('POST', '/api/setup', { username, name, password });
+    this.resetCacheIfOtherUser(r.me);
+    this.setSession(r);
+  }
+
+  async logout() {
+    try { await this.api('POST', '/api/logout'); } catch { /* igual se cierra localmente */ }
+    this.clearSession();
+    localStorage.removeItem(CACHE_KEY);
+    this.since = 0; this.rawSongs = {}; this.rawLists = [];
+    this.rebuild();
+  }
+
+  // si en este dispositivo entra otra persona, no mostrarle las listas privadas del anterior
+  resetCacheIfOtherUser(me) {
+    if (this.me && this.me.id !== me.id) {
+      localStorage.removeItem(CACHE_KEY);
+      this.since = 0; this.rawSongs = {}; this.rawLists = [];
+    }
+  }
+
+  // ---------------------------------------------------------------- caché local
+
   loadCache() {
-    try { this.files = JSON.parse(localStorage.getItem(this.cacheKey) || '{}').files || {}; }
-    catch { this.files = {}; }
+    try {
+      const c = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
+      if (c) { this.since = c.since || 0; this.rawSongs = c.songs || {}; this.rawLists = c.lists || []; this.me = c.me || null; }
+    } catch { /* caché dañada: se vuelve a bajar */ }
     this.rebuild();
   }
 
   saveCache() {
-    try { localStorage.setItem(this.cacheKey, JSON.stringify({ files: this.files })); }
-    catch (e) { console.warn('No se pudo guardar la caché', e); }
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ since: this.since, songs: this.rawSongs, lists: this.rawLists, me: this.me })); }
+    catch (e) { console.warn('No se pudo guardar la copia local', e); }
   }
 
   rebuild() {
     this.songs.clear();
+    for (const [slug, s] of Object.entries(this.rawSongs)) this.songs.set(slug, makeSongEntry(slug, s.text, s.rev));
     this.lists.clear();
-    for (const [path, f] of Object.entries(this.files)) {
-      if (path.startsWith('canciones/') && path.endsWith('.cho')) this.songs.set(path, makeSongEntry(path, f.text));
-      else if (path.startsWith('listas/') && path.endsWith('.json')) {
-        try { this.lists.set(path, { path, ...JSON.parse(f.text) }); } catch { /* lista dañada */ }
-      }
+    for (const l of this.rawLists) {
+      const path = `listas/${l.id}`;
+      this.lists.set(path, {
+        path, id: l.id, name: l.name, date: l.date || '', rev: l.rev,
+        owner_id: l.owner_id, owner_name: l.owner_name, mine: l.owner_id === this.me?.id,
+        canEdit: l.can_edit, share_all: l.share_all, shares: l.shares || [],
+        items: l.items.map(it => ({ ...it, semis: l.semis?.[it.id] || 0 })),
+      });
     }
     this.dispatchEvent(new Event('change'));
   }
@@ -48,28 +136,25 @@ export class Store extends EventTarget {
   }
 
   async sync() {
+    if (!this.loggedIn) return;
     if (this.syncing) return this.syncing;
     this.syncing = (async () => {
       this.setStatus('syncing');
       try {
-        const remote = await this.backend.list();
-        const wanted = remote.filter(f => /^(canciones\/.+\.cho|listas\/.+\.json)$/i.test(f.path));
-        const seen = new Set();
-        let changed = false;
-        const toRead = wanted.filter(f => { seen.add(f.path); return this.files[f.path]?.rev !== f.rev; });
-        // descargar de a varios a la vez
-        for (let i = 0; i < toRead.length; i += 8) {
-          const batch = toRead.slice(i, i + 8);
-          const texts = await Promise.all(batch.map(f => this.backend.read(f.path)));
-          batch.forEach((f, j) => { this.files[f.path] = { rev: f.rev, text: texts[j] }; });
-          changed = true;
+        const r = await this.api('GET', `/api/sync?since=${this.since}`);
+        for (const s of r.songs) {
+          if (s.deleted) delete this.rawSongs[s.slug];
+          else this.rawSongs[s.slug] = { text: s.text, rev: s.rev };
         }
-        for (const p of Object.keys(this.files)) if (!seen.has(p)) { delete this.files[p]; changed = true; }
-        if (changed) { this.saveCache(); this.rebuild(); }
+        this.rawLists = r.lists;
+        this.me = r.me;
+        this.since = r.now;
+        this.saveCache();
+        this.rebuild();
         this.setStatus('ok');
       } catch (e) {
         console.error(e);
-        this.setStatus('error', e);
+        this.setStatus(e.status === 401 ? 'idle' : 'error', e);
       } finally {
         this.syncing = null;
       }
@@ -77,39 +162,82 @@ export class Store extends EventTarget {
     return this.syncing;
   }
 
-  async write(path, text) {
-    const { rev } = await this.backend.write(path, text);
-    this.files[path] = { rev, text };
+  // ---------------------------------------------------------------- canciones
+
+  /**
+   * Guarda una canción (nueva si slug es null). Si otro la cambió mientras se editaba, la API
+   * responde 409; con force=true se guarda igual.
+   */
+  async saveSong(slug, text, { force = false, baseRev } = {}) {
+    let r;
+    if (slug) r = await this.api('PUT', `/api/songs/${slug}`, { text, baseRev: baseRev ?? this.rawSongs[slug]?.rev, force });
+    else r = await this.api('POST', '/api/songs', { text });
+    this.rawSongs[r.slug] = { text, rev: r.rev };
+    this.saveCache();
+    this.rebuild();
+    return r.slug;
+  }
+
+  async deleteSong(slug) {
+    await this.api('DELETE', `/api/songs/${slug}`);
+    delete this.rawSongs[slug];
     this.saveCache();
     this.rebuild();
   }
 
-  async remove(path) {
-    await this.backend.remove(path);
-    delete this.files[path];
-    this.saveCache();
-    this.rebuild();
-  }
+  songHistory(slug) { return this.api('GET', `/api/songs/${slug}/history`); }
 
-  /** Guarda una canción. Si es nueva (path null) elige un nombre de archivo libre. */
-  async saveSong(path, text) {
-    if (!path) {
-      const title = parseSong(text).meta.title || 'cancion';
-      const base = slugify(title);
-      let p = `canciones/${base}.cho`, n = 2;
-      while (this.files[p]) p = `canciones/${base}-${n++}.cho`;
-      path = p;
-    }
-    await this.write(path, text);
-    return path;
-  }
+  // ---------------------------------------------------------------- listas
 
   async saveList(list) {
-    const path = list.path || `listas/${list.date || 'sin-fecha'}-${slugify(list.name)}-${Date.now().toString(36)}.json`;
-    const { path: _, ...data } = list;
-    await this.write(path, JSON.stringify(data, null, 2));
-    return path;
+    const items = list.items.map(({ semis, ...it }) => ({ ...it, id: it.id || newItemId() }));
+    list.items.forEach((it, i) => { it.id = items[i].id; });
+    if (!list.id) {
+      const semis = Object.fromEntries(list.items.filter(it => it.semis).map(it => [it.id, it.semis]));
+      const r = await this.api('POST', '/api/lists', { name: list.name, date: list.date, items, semis });
+      await this.sync();
+      return `listas/${r.id}`;
+    }
+    const r = await this.api('PUT', `/api/lists/${list.id}`, { name: list.name, date: list.date, items, baseRev: list.rev, force: true });
+    list.rev = r.rev;
+    const raw = this.rawLists.find(l => l.id === list.id);
+    if (raw) Object.assign(raw, { name: list.name, date: list.date, items: r.items, rev: r.rev });
+    this.saveCache();
+    this.rebuild();
+    return list.path;
   }
+
+  /** El tono de cada canción en la lista es personal: se guarda aparte. */
+  async saveListSemis(list) {
+    const semis = Object.fromEntries(list.items.filter(it => it.semis).map(it => [it.id, it.semis]));
+    await this.api('PUT', `/api/lists/${list.id}/semis`, semis);
+    const raw = this.rawLists.find(l => l.id === list.id);
+    if (raw) raw.semis = semis;
+    this.saveCache();
+  }
+
+  async shareList(list, shareAll, shares) {
+    await this.api('PUT', `/api/lists/${list.id}/sharing`, { share_all: shareAll, shares });
+    await this.sync();
+  }
+
+  async deleteList(list) {
+    await this.api('DELETE', `/api/lists/${list.id}`);
+    this.rawLists = this.rawLists.filter(l => l.id !== list.id);
+    this.saveCache();
+    this.rebuild();
+  }
+
+  async directory() { return (await this.api('GET', '/api/directory')).users; }
+
+  // ---------------------------------------------------------------- cuenta y usuarios
+
+  changePassword(oldPass, newPass) { return this.api('POST', '/api/me/password', { old: oldPass, new: newPass }); }
+  async listUsers() { return (await this.api('GET', '/api/users')).users; }
+  createUser(u) { return this.api('POST', '/api/users', u); }
+  updateUser(id, changes) { return this.api('PUT', `/api/users/${id}`, changes); }
+
+  // ---------------------------------------------------------------- búsqueda
 
   songList() {
     return [...this.songs.values()].sort((a, b) => a.sortKey.localeCompare(b.sortKey));
@@ -136,13 +264,15 @@ export class Store extends EventTarget {
   }
 }
 
-function makeSongEntry(path, text) {
+const newItemId = () => crypto.getRandomValues(new Uint32Array(1))[0].toString(36);
+
+function makeSongEntry(path, text, rev) {
   let parsed;
   try { parsed = parseSong(text); } catch { parsed = { meta: {}, lines: [] }; }
-  const title = parsed.meta.title || path.replace(/^canciones\/|\.cho$/g, '');
+  const title = parsed.meta.title || path;
   const plain = songPlainText(parsed);
   return {
-    path, text, song: parsed, title,
+    path, text, rev, song: parsed, title,
     key: songKey(parsed),
     sortKey: fold(title).replace(/^[¡¿"'(]+/, ''),
     plain,

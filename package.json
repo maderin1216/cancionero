@@ -1,12 +1,13 @@
 {
   "name": "cancionero",
-  "version": "1.2.0",
+  "version": "2.0.0",
   "main": "electron/main.mjs",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "node tools/dev-server.mjs 5180",
+    "dev": "wrangler dev --config server/wrangler.toml --persist-to server/.wrangler/state --port 8787",
     "start": "electron .",
-    "dist": "electron-builder --win portable"
+    "dist": "electron-builder --win portable",
+    "deploy": "wrangler deploy --config server/wrangler.toml"
   },
   "keywords": [],
   "author": "",
@@ -18,7 +19,8 @@
     "electron-builder": "^26.15.3",
     "jszip": "^3.10.2",
     "opentype.js": "^2.0.0",
-    "sharp": "^0.35.5"
+    "sharp": "^0.35.5",
+    "wrangler": "^4.149.0"
   },
   "type": "module",
   "productName": "Cancionero",

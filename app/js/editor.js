@@ -58,6 +58,7 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
   const entry = path ? store.songs.get(path) : null;
   if (path && !entry) { view.innerHTML = '<div class="page empty">No se encontró la canción.</div>'; return {}; }
   const { meta, body } = splitSource(entry ? entry.text : '');
+  const baseRev = entry?.rev; // versión que se empezó a editar, para detectar cambios de otros
   let dirty = false;
 
   view.innerHTML = `<div class="editor">
@@ -284,8 +285,8 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
     if (a === 'cancel') { if (!dirty || await confirmDialog('¿Descartar los cambios?', 'Descartar', true)) { dirty = false; onCancel(); } }
     else if (a === 'save') save();
     else if (a === 'delete') {
-      if (await confirmDialog(`¿Eliminar "${entry.title}"? Se borra de Dropbox (queda en la papelera de Dropbox unos días).`, 'Eliminar', true)) {
-        try { await store.remove(path); dirty = false; location.hash = '#/'; } catch (err) { toast(err.message); }
+      if (await confirmDialog(`¿Eliminar "${entry.title}" para todos? Queda guardada en el historial por si hay que recuperarla.`, 'Eliminar', true)) {
+        try { await store.deleteSong(path); dirty = false; location.hash = '#/'; } catch (err) { toast(err.message); }
       }
     }
     else if (a === 'tup') transposeAll(1);
@@ -327,12 +328,21 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
     if (!key) { const k = songKey(parseSong(src.value)); if (k) key = keyName(k); }
     const text = `{title: ${title}}\n${key ? `{key: ${key}}\n` : ''}\n${src.value.replace(/\s+$/, '')}\n`;
     try {
-      const p = await store.saveSong(path, text);
+      const p = await store.saveSong(path, text, { baseRev });
       dirty = false;
       toast('Guardada');
       onSaved(p);
     } catch (e) {
-      toast('No se pudo guardar: ' + e.message, 5000);
+      if (e.status !== 409) { toast('No se pudo guardar: ' + e.message, 5000); return; }
+      // otra persona guardó cambios mientras se editaba
+      const who = e.data.by ? `${e.data.by} modificó` : 'Alguien modificó';
+      if (!await confirmDialog(`${who} esta canción mientras la editabas. Si guardás igual, se pierden sus cambios (quedan en el historial). ¿Guardar igual?`, 'Guardar igual', true)) return;
+      try {
+        const p = await store.saveSong(path, text, { force: true });
+        dirty = false;
+        toast('Guardada');
+        onSaved(p);
+      } catch (e2) { toast('No se pudo guardar: ' + e2.message, 5000); }
     }
   }
 

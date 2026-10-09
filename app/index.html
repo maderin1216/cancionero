@@ -29,10 +29,11 @@
 
   <nav id="drawer" class="drawer" hidden>
     <div class="drawer-panel">
-      <div class="drawer-title">Cancionero</div>
+      <div class="drawer-title">Cancionero<small id="drawerUser"></small></div>
       <a href="#/" data-nav>Canciones</a>
       <a href="#/listas" data-nav>Listas</a>
-      <a href="#/nueva" data-nav>Nueva canción</a>
+      <a href="#/nueva" data-nav id="navNew">Nueva canción</a>
+      <a href="#/usuarios" data-nav id="navUsers" hidden>Usuarios</a>
       <a href="#/ajustes" data-nav>Ajustes</a>
       <label class="drawer-night"><span>Modo noche</span><input id="nightToggle" type="checkbox" role="switch"></label>
       <button id="syncBtn" class="drawer-sync">Sincronizar ahora</button>

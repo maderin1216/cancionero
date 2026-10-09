@@ -1,0 +1,14 @@
+# Cancionero 2.0: API + app web en Cloudflare Workers, datos en D1.
+name = "cancionero"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+
+[assets]
+directory = "../app"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cancionero"
+database_id = "local-dev"
+migrations_dir = "migrations"
