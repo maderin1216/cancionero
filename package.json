@@ -40,7 +40,7 @@
       "icon": "electron/icon.png"
     },
     "portable": {
-      "artifactName": "Cancionero.exe"
+      "artifactName": "Cancionero-${version}.exe"
     }
   }
 }
