@@ -24,7 +24,6 @@ export class ApiStore extends EventTarget {
     this.me = null;
     this.rawSongs = {};  // slug -> {text, rev, mine, owner_name, visibility}
     this.catalog = [];   // canciones ajenas de las que sólo se ve el título
-    this.requests = { incoming: [], mine: [] };
     this.rawLists = [];  // tal como vienen del servidor
     this.songs = new Map();
     this.lists = new Map();
@@ -87,7 +86,7 @@ export class ApiStore extends EventTarget {
     try { await this.api('POST', '/api/logout'); } catch { /* igual se cierra localmente */ }
     this.clearSession();
     localStorage.removeItem(CACHE_KEY);
-    this.rawSongs = {}; this.rawLists = []; this.catalog = []; this.requests = { incoming: [], mine: [] };
+    this.rawSongs = {}; this.rawLists = []; this.catalog = [];
     this.rebuild();
   }
 
@@ -95,7 +94,7 @@ export class ApiStore extends EventTarget {
   resetCacheIfOtherUser(me) {
     if (this.me && this.me.id !== me.id) {
       localStorage.removeItem(CACHE_KEY);
-      this.rawSongs = {}; this.rawLists = []; this.catalog = []; this.requests = { incoming: [], mine: [] };
+      this.rawSongs = {}; this.rawLists = []; this.catalog = [];
     }
   }
 
@@ -104,13 +103,13 @@ export class ApiStore extends EventTarget {
   loadCache() {
     try {
       const c = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
-      if (c) { this.rawSongs = c.songs || {}; this.rawLists = c.lists || []; this.me = c.me || null; this.catalog = c.catalog || []; this.requests = c.requests || this.requests; }
+      if (c) { this.rawSongs = c.songs || {}; this.rawLists = c.lists || []; this.me = c.me || null; this.catalog = c.catalog || []; }
     } catch { /* caché dañada: se vuelve a bajar */ }
     this.rebuild();
   }
 
   saveCache() {
-    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ songs: this.rawSongs, lists: this.rawLists, me: this.me, catalog: this.catalog, requests: this.requests })); }
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ songs: this.rawSongs, lists: this.rawLists, me: this.me, catalog: this.catalog })); }
     catch (e) { console.warn('No se pudo guardar la copia local', e); }
   }
 
@@ -153,7 +152,6 @@ export class ApiStore extends EventTarget {
         this.rawSongs = next;
         this.rawLists = r.lists;
         this.catalog = r.catalog;
-        this.requests = r.requests;
         this.me = r.me;
         this.saveCache();
         this.rebuild();
@@ -202,21 +200,11 @@ export class ApiStore extends EventTarget {
     return r.changed;
   }
 
-  /** Copia propia de una canción ajena que se puede ver. Devuelve el slug de la copia. */
+  /** Copia propia de una canción ajena (se puede repetir). Devuelve el slug de la copia. */
   async copySong(slug) {
     const r = await this.api('POST', `/api/songs/${slug}/copy`);
     await this.sync();
     return r.slug;
-  }
-
-  async requestCopy(slug) {
-    await this.api('POST', `/api/songs/${slug}/request`);
-    await this.sync();
-  }
-
-  async resolveRequest(id, action) {
-    await this.api('POST', `/api/requests/${id}/${action}`);
-    await this.sync();
   }
 
   // ---------------------------------------------------------------- listas

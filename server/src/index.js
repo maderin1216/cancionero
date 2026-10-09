@@ -5,8 +5,9 @@
 //   - Cada canción tiene dueño; sólo el dueño la edita o la borra.
 //   - Un usuario puede VER una canción si es suya, si es "public", o si está en una lista que le
 //     compartieron y la canción es del dueño de esa lista.
-//   - Las "title" de otros aparecen sólo con el título: se puede pedir una copia al dueño.
-//   - Quien puede ver una canción ajena puede hacerse una copia propia.
+//   - Las "title" de otros aparecen sólo con el título.
+//   - Cualquiera puede hacerse una copia propia (cuantas veces quiera) de una canción ajena que
+//     puede ver o cuyo título es visible.
 import { hashPassword, verifyPassword, newToken, tokenHash, checkPasswordStrength } from './auth.js';
 
 const SESSION_DAYS = 180;
@@ -85,10 +86,6 @@ async function route(req, env, url) {
   }
   if ((mt = p.match(/^\/api\/songs\/([a-z0-9-]+)\/history$/)) && m === 'GET') return songHistory(db, me, mt[1]);
   if ((mt = p.match(/^\/api\/songs\/([a-z0-9-]+)\/copy$/)) && m === 'POST') return copyVisibleSong(db, me, mt[1]);
-  if ((mt = p.match(/^\/api\/songs\/([a-z0-9-]+)\/request$/)) && m === 'POST') return requestCopy(db, me, mt[1]);
-
-  // pedidos de copia
-  if ((mt = p.match(/^\/api\/requests\/(\d+)\/(approve|deny)$/)) && m === 'POST') return resolveRequest(db, me, +mt[1], mt[2]);
 
   // listas
   if (p === '/api/lists' && m === 'POST') return createList(db, me, await readJson(req));
@@ -232,14 +229,9 @@ async function getOwnSong(db, me, slug) {
  */
 async function sync(db, me, have) {
   const now = Date.now();
-  const [songsRes, lists, reqIn, reqMine] = await Promise.all([
+  const [songsRes, lists] = await Promise.all([
     db.prepare('SELECT s.id, s.slug, s.text, s.rev, s.owner_id, s.visibility, s.copied_from, u.name AS owner_name FROM songs s JOIN users u ON u.id = s.owner_id WHERE s.deleted = 0').all(),
     visibleLists(db, me),
-    db.prepare(`SELECT r.id, r.created_at, s.slug, s.text, u.name AS requester_name FROM song_requests r
-      JOIN songs s ON s.id = r.song_id JOIN users u ON u.id = r.requester_id
-      WHERE r.status = 'pending' AND s.owner_id = ? AND s.deleted = 0 ORDER BY r.created_at`).bind(me.id).all(),
-    db.prepare(`SELECT r.id, r.status, r.copy_slug, r.created_at, s.slug, s.text FROM song_requests r JOIN songs s ON s.id = r.song_id
-      WHERE r.requester_id = ? ORDER BY r.created_at DESC LIMIT 100`).bind(me.id).all(),
   ]);
   const grants = listGrants(lists, me);
   const songs = [], catalog = [];
@@ -247,7 +239,6 @@ async function sync(db, me, have) {
   for (const s of songsRes.results) titles[s.slug] = songTitle(s.text);
   // canciones de las que ya tengo una copia
   const copied = new Set(songsRes.results.filter(s => s.owner_id === me.id && s.copied_from).map(s => s.copied_from));
-  const pendingMine = new Map(reqMine.results.filter(r => r.status === 'pending').map(r => [r.slug, r.id]));
   for (const s of songsRes.results) {
     const mine = s.owner_id === me.id;
     if (canViewSong(s, me, grants)) {
@@ -256,18 +247,12 @@ async function sync(db, me, have) {
         ...(have[s.slug] === s.rev ? {} : { text: s.text }),
       });
     } else if (s.visibility === 'title') {
-      catalog.push({ slug: s.slug, title: titles[s.slug], owner_name: s.owner_name, requested: pendingMine.has(s.slug), copied: copied.has(s.id) });
+      catalog.push({ slug: s.slug, title: titles[s.slug], owner_name: s.owner_name, copied: copied.has(s.id) });
     }
   }
   // títulos de las canciones de cada lista (por si alguna no se puede ver)
   for (const l of lists) l.titles = Object.fromEntries(l.items.map(it => [it.song, titles[it.song] || '']));
-  return {
-    now, me: publicMe(me), songs, catalog, lists,
-    requests: {
-      incoming: reqIn.results.map(r => ({ id: r.id, slug: r.slug, title: songTitle(r.text), requester_name: r.requester_name, created_at: r.created_at })),
-      mine: reqMine.results.map(r => ({ id: r.id, slug: r.slug, title: songTitle(r.text), status: r.status, copy_slug: r.copy_slug, created_at: r.created_at })),
-    },
-  };
+  return { now, me: publicMe(me), songs, catalog, lists };
 }
 
 async function visibleLists(db, me) {
@@ -362,7 +347,6 @@ async function deleteSong(db, me, slug) {
   await db.batch([
     db.prepare('INSERT INTO song_history (song_id, text, rev, updated_at, updated_by) VALUES (?, ?, ?, ?, ?)').bind(cur.id, cur.text, cur.rev, cur.updated_at, cur.updated_by),
     db.prepare('UPDATE songs SET deleted = 1, rev = rev + 1, updated_at = ?, updated_by = ? WHERE id = ?').bind(now, me.id, cur.id),
-    db.prepare(`UPDATE song_requests SET status = 'denied', resolved_at = ? WHERE song_id = ? AND status = 'pending'`).bind(now, cur.id),
   ]);
   return {};
 }
@@ -375,39 +359,13 @@ async function songHistory(db, me, slug) {
   return { history: results };
 }
 
-/** Copia propia de una canción ajena que el usuario puede ver ("Agregar a mis canciones"). */
+/** Copia propia de una canción ajena que se puede ver o cuyo título es visible. Se puede repetir. */
 async function copyVisibleSong(db, me, slug) {
   const s = await getSong(db, slug);
   if (s.owner_id === me.id) fail(400, 'Esta canción ya es tuya');
   const grants = listGrants(await visibleLists(db, me), me);
-  if (!canViewSong(s, me, grants)) fail(403, 'No tenés acceso a esta canción');
+  if (s.visibility !== 'title' && !canViewSong(s, me, grants)) fail(403, 'No tenés acceso a esta canción');
   return insertSong(db, me.id, s.text, { copiedFrom: s.id, slugBase: `${slugify(songTitle(s.text))}-${me.username.replace(/[^a-z0-9]+/g, '-')}` });
-}
-
-async function requestCopy(db, me, slug) {
-  const s = await getSong(db, slug);
-  if (s.owner_id === me.id) fail(400, 'Esta canción ya es tuya');
-  if (s.visibility !== 'title' && s.visibility !== 'public') fail(403, 'Esta canción no está disponible');
-  const pending = await db.prepare(`SELECT id FROM song_requests WHERE song_id = ? AND requester_id = ? AND status = 'pending'`).bind(s.id, me.id).first();
-  if (pending) return { id: pending.id };
-  const r = await db.prepare('INSERT INTO song_requests (song_id, requester_id, created_at) VALUES (?, ?, ?) RETURNING id').bind(s.id, me.id, Date.now()).first();
-  return { id: r.id };
-}
-
-async function resolveRequest(db, me, id, action) {
-  const r = await db.prepare(`SELECT r.*, s.owner_id, s.text, s.id AS sid, u.username AS requester_username
-    FROM song_requests r JOIN songs s ON s.id = r.song_id JOIN users u ON u.id = r.requester_id WHERE r.id = ?`).bind(id).first();
-  if (!r) fail(404, 'El pedido no existe');
-  if (r.owner_id !== me.id) fail(403, 'Sólo el dueño de la canción puede responder el pedido');
-  if (r.status !== 'pending') fail(400, 'Ese pedido ya fue respondido');
-  const now = Date.now();
-  if (action === 'deny') {
-    await db.prepare(`UPDATE song_requests SET status = 'denied', resolved_at = ? WHERE id = ?`).bind(now, id).run();
-    return {};
-  }
-  const copy = await insertSong(db, r.requester_id, r.text, { copiedFrom: r.sid, slugBase: `${slugify(songTitle(r.text))}-${r.requester_username.replace(/[^a-z0-9]+/g, '-')}` });
-  await db.prepare(`UPDATE song_requests SET status = 'approved', resolved_at = ?, copy_slug = ? WHERE id = ?`).bind(now, copy.slug, id).run();
-  return { copy_slug: copy.slug };
 }
 
 // ---------------------------------------------------------------- listas

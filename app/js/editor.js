@@ -10,7 +10,7 @@ import { toast, openDialog, confirmDialog } from './ui.js';
 
 export const VIS_OPTIONS = [
   ['private', 'Sólo yo'],
-  ['title', 'Los demás ven el título y me pueden pedir una copia'],
+  ['title', 'Los demás ven el título y pueden copiarla'],
   ['public', 'Los demás la ven (sólo lectura) y pueden copiarla'],
 ];
 

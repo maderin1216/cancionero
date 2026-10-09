@@ -91,9 +91,6 @@ function updateChrome() {
   $('#navUsers').hidden = !store.isAdmin;
   $('#navNew').hidden = !store.canEditSongs;
   $('#logoutBtn').hidden = !store.loggedIn;
-  const n = store.requests.incoming.length;
-  $('#reqBadge').textContent = n || '';
-  $('#reqBadge').hidden = !n;
 }
 
 function setupChrome() {
@@ -186,7 +183,6 @@ function route() {
   else if (parts[0] === 'nueva' && store.canEditSongs) current = editorView(null);
   else if (parts[0] === 'ajustes') current = settingsView();
   else if (parts[0] === 'usuarios' && store.isAdmin) current = usersView();
-  else if (parts[0] === 'pedidos') current = requestsView();
   else current = songsView();
   search.placeholder = current.ownsSearch ? 'Filtrar canciones…' : 'Buscar canción…';
 }
@@ -264,7 +260,7 @@ function songsView() {
     const tab = (id, label, n) => `<button class="tab${songsTab === id ? ' on' : ''}" data-tab="${id}">${label} <span class="count">${n}</span></button>`;
     const songRow = x => `<li><a class="item" href="${songHash(x.song.path)}"><span class="t">${esc(x.song.title)}${x.snippet ? `<small>${esc(x.snippet)}</small>` : ''}<small>de ${esc(x.song.owner_name)}</small></span><span class="k">${esc(keyName(x.song.key, settings.notation))}</span></a></li>`;
     const mineRow = x => `<li class="item mine-row"><a class="t" href="${songHash(x.song.path)}">${esc(x.song.title)}${x.snippet ? `<small>${esc(x.snippet)}</small>` : ''}</a>${visSelect(x.song.path, x.song.visibility)}<span class="k">${esc(keyName(x.song.key, settings.notation))}</span></li>`;
-    const otherRow = c => `<li class="item"><span class="t">🔒 ${esc(c.title)}<small>de ${esc(c.owner_name)}</small></span>${c.copied ? '<span class="hint">ya tenés una copia</span>' : c.requested ? '<span class="hint">pedido enviado</span>' : `<button class="btn small" data-request="${esc(c.slug)}">Pedir copia</button>`}</li>`;
+    const otherRow = c => `<li class="item"><span class="t">🔒 ${esc(c.title)}<small>de ${esc(c.owner_name)}${c.copied ? ' · ya tenés una copia' : ''}</small></span><button class="btn small" data-copy="${esc(c.slug)}">Copiar</button></li>`;
     let body;
     if (songsTab === 'mine') {
       body = r.mine.length ? `<p class="hint">Al lado de cada canción elegís quién la puede ver. Las de una lista que compartas las ven igual las personas con las que la compartiste.</p><ul class="items">${r.mine.map(mineRow).join('')}</ul>`
@@ -273,7 +269,7 @@ function songsView() {
       body = r.shared.length ? `<ul class="items">${r.shared.map(songRow).join('')}</ul>`
         : `<div class="empty">${q ? 'Ninguna coincide.' : 'Acá aparecen las canciones de otros que podés ver: las de listas que te compartieron y las que sus dueños hicieron visibles.'}</div>`;
     } else {
-      body = r.others.length ? `<p class="hint">De estas canciones sólo se ve el título. Si querés una, pedile una copia al dueño.</p><ul class="items">${r.others.map(otherRow).join('')}</ul>`
+      body = r.others.length ? `<p class="hint">De estas canciones sólo se ve el título. Con "Copiar" se agrega una copia a tus canciones, que podés editar.</p><ul class="items">${r.others.map(otherRow).join('')}</ul>`
         : `<div class="empty">${q ? 'Ninguna coincide.' : 'No hay canciones de otros con el título visible.'}</div>`;
     }
     view.innerHTML = `<div class="page">
@@ -286,11 +282,12 @@ function songsView() {
   const onClick = async e => {
     const t = e.target.closest('[data-tab]');
     if (t) { songsTab = t.dataset.tab; render(); return; }
-    const rq = e.target.closest('[data-request]');
-    if (rq) {
-      rq.disabled = true;
-      try { await store.requestCopy(rq.dataset.request); toast('Pedido enviado. Cuando el dueño lo apruebe, la copia aparece en "Mías".'); }
-      catch (err) { toast(err.message); rq.disabled = false; }
+    const cp = e.target.closest('[data-copy]');
+    if (cp) {
+      cp.disabled = true;
+      try { await store.copySong(cp.dataset.copy); toast('Copia agregada a "Mías"'); }
+      catch (err) { toast('No se pudo copiar: ' + err.message); }
+      cp.disabled = false;
       return;
     }
   };
@@ -395,8 +392,7 @@ function songView(path, lpath = null, idx = 0) {
     else if (a === 'print') window.print();
     else if (a === 'addlist') addToListDialog(path, semis);
     else if (a === 'copy') {
-      if (!await confirmDialog(`¿Agregar "${entry.title}" a tus canciones? Se crea una copia tuya que podés editar; la de ${entry.owner_name} no cambia.`, 'Agregar')) return;
-      try { const slug = await store.copySong(path); toast('Agregada a tus canciones'); location.hash = songHash(slug); }
+      try { await store.copySong(path); toast('Copia agregada a "Mías"'); }
       catch (err) { toast('No se pudo copiar: ' + err.message); }
     }
   };
@@ -745,38 +741,6 @@ function newUserDialog() {
     d.querySelector('[data-x]').onclick = () => close(null);
     d.querySelector('form').onsubmit = e => { e.preventDefault(); close(Object.fromEntries(new FormData(e.target))); };
   });
-}
-
-// ---------------------------------------------------------------- vista: pedidos de copia
-
-function requestsView() {
-  const STATUS = { pending: 'esperando respuesta', approved: 'aprobado', denied: 'rechazado' };
-  const render = () => {
-    const { incoming, mine } = store.requests;
-    view.innerHTML = `<div class="page">
-      <h1>Pedidos</h1>
-      <h3>Te piden una copia</h3>
-      ${incoming.length ? `<ul class="items">${incoming.map(r => `<li class="item" data-id="${r.id}"><span class="t">${esc(r.title)}<small>${esc(r.requester_name)} · ${esc(new Date(r.created_at).toLocaleDateString('es-AR'))}</small></span>
-        <button class="btn small primary" data-act="approve">Dar copia</button><button class="btn small" data-act="deny">Rechazar</button></li>`).join('')}</ul>`
-        : '<p class="hint">No hay pedidos pendientes.</p>'}
-      <h3 style="margin-top:26px">Lo que pediste</h3>
-      ${mine.length ? `<ul class="items">${mine.map(r => `<li class="item"><span class="t">${esc(r.title)}<small>${STATUS[r.status]}</small></span>${r.status === 'approved' && r.copy_slug && store.songs.has(r.copy_slug) ? `<a class="btn small" href="${songHash(r.copy_slug)}">Abrir</a>` : ''}</li>`).join('')}</ul>`
-        : '<p class="hint">Todavía no pediste ninguna canción. Las que se pueden pedir están en Canciones → Otras.</p>'}
-      <p class="hint" style="margin-top:20px">Dar una copia le crea a esa persona su propia versión de la canción, que puede editar. Tu canción no cambia.</p>
-    </div>`;
-  };
-  const onClick = async e => {
-    const b = e.target.closest('[data-act]');
-    if (!b) return;
-    const id = +b.closest('[data-id]').dataset.id;
-    b.disabled = true;
-    try { await store.resolveRequest(id, b.dataset.act); toast(b.dataset.act === 'approve' ? 'Copia enviada' : 'Pedido rechazado'); }
-    catch (err) { toast(err.message); b.disabled = false; }
-  };
-  view.addEventListener('click', onClick);
-  render();
-  store.sync();
-  return { onStoreChange: render, leave: () => view.removeEventListener('click', onClick) };
 }
 
 // ---------------------------------------------------------------- vista: ajustes y cuenta

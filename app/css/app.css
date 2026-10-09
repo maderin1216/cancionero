@@ -260,6 +260,5 @@ body.logged-out .search-wrap { visibility: hidden; }
 .mine-row .t { text-decoration: none; }
 .vis-sel { flex: none; width: min(46vw, 200px); padding: 5px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font-size: 14px; }
 .song-owner { color: var(--muted); font-size: 14px; margin-bottom: 2px; }
-.badge { display: inline-block; min-width: 20px; padding: 1px 6px; border-radius: 999px; background: var(--danger); color: #fff; font-size: 13px; text-align: center; margin-left: 6px; }
 .vis-opt { margin: 8px 0; align-items: flex-start; }
 .vis-opt input { margin-top: 3px; }
