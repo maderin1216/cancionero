@@ -6,5 +6,5 @@ export const APP_VERSION = '2.0';
 
 // Dirección del servidor (Cloudflare). La app web se sirve desde ahí mismo, así que en el navegador
 // la API está en el mismo sitio; la app de escritorio (app://) necesita la dirección completa.
-export const SERVER_URL = 'https://cancionero.workers.dev';
+export const SERVER_URL = 'https://cancionero.cancionero.workers.dev';
 export const API_BASE = location.protocol === 'app:' ? SERVER_URL : '';

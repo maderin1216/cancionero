@@ -10,5 +10,5 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "cancionero"
-database_id = "local-dev"
+database_id = "a1203fec-0412-4269-85ba-589578a41117"
 migrations_dir = "migrations"
