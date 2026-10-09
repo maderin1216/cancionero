@@ -6,7 +6,7 @@ import { transposedKeyName } from './song.js';
 import { keyName, setAccidentals } from './chords.js';
 import { esc, debounce, formatDate, fold } from './util.js';
 import { toast, openDialog, confirmDialog, formDialog } from './ui.js';
-import { renderEditor, VIS_OPTIONS } from './editor.js';
+import { renderEditor } from './editor.js';
 
 // ---------------------------------------------------------------- ajustes (de cada dispositivo)
 
@@ -26,7 +26,19 @@ function applySettings() {
 }
 
 const ROLE_NAMES = { admin: 'Administrador', editor: 'Usuario' };
-const VIS_SHORT = { private: '', title: 'título visible', public: 'visible para todos' };
+// visibilidad de cada canción propia (se elige con un selector en la lista y en la canción)
+const VIS_LABELS = [['private', '🔒 Sólo yo'], ['title', '👁 Título visible'], ['public', '🌐 Visible para todos']];
+const visSelect = (slug, v) => `<select class="vis-sel" data-vis="${esc(slug)}" title="Quién puede ver esta canción" aria-label="Quién puede ver esta canción">${VIS_LABELS.map(([val, t]) => `<option value="${val}" ${val === v ? 'selected' : ''}>${t}</option>`).join('')}</select>`;
+
+/** Guarda la visibilidad elegida en un selector [data-vis]. */
+async function onVisChange(e) {
+  const sel = e.target.closest('[data-vis]');
+  if (!sel) return;
+  sel.disabled = true;
+  try { await store.setVisibility([sel.dataset.vis], sel.value); toast('Guardado'); }
+  catch (err) { toast('No se pudo cambiar: ' + err.message); }
+  sel.disabled = false;
+}
 
 // ---------------------------------------------------------------- arranque
 
@@ -250,11 +262,12 @@ function songsView() {
     const nShared = store.songs.size - nMine;
     if (!songsTab) songsTab = nMine || !nShared ? 'mine' : 'shared';
     const tab = (id, label, n) => `<button class="tab${songsTab === id ? ' on' : ''}" data-tab="${id}">${label} <span class="count">${n}</span></button>`;
-    const songRow = x => `<li><a class="item" href="${songHash(x.song.path)}"><span class="t">${esc(x.song.title)}${x.snippet ? `<small>${esc(x.snippet)}</small>` : ''}${songsTab === 'shared' ? `<small>de ${esc(x.song.owner_name)}</small>` : ''}${songsTab === 'mine' && VIS_SHORT[x.song.visibility] ? `<small class="vis">${VIS_SHORT[x.song.visibility]}</small>` : ''}</span><span class="k">${esc(keyName(x.song.key, settings.notation))}</span></a></li>`;
+    const songRow = x => `<li><a class="item" href="${songHash(x.song.path)}"><span class="t">${esc(x.song.title)}${x.snippet ? `<small>${esc(x.snippet)}</small>` : ''}<small>de ${esc(x.song.owner_name)}</small></span><span class="k">${esc(keyName(x.song.key, settings.notation))}</span></a></li>`;
+    const mineRow = x => `<li class="item mine-row"><a class="t" href="${songHash(x.song.path)}">${esc(x.song.title)}${x.snippet ? `<small>${esc(x.snippet)}</small>` : ''}</a>${visSelect(x.song.path, x.song.visibility)}<span class="k">${esc(keyName(x.song.key, settings.notation))}</span></li>`;
     const otherRow = c => `<li class="item"><span class="t">🔒 ${esc(c.title)}<small>de ${esc(c.owner_name)}</small></span>${c.copied ? '<span class="hint">ya tenés una copia</span>' : c.requested ? '<span class="hint">pedido enviado</span>' : `<button class="btn small" data-request="${esc(c.slug)}">Pedir copia</button>`}</li>`;
     let body;
     if (songsTab === 'mine') {
-      body = r.mine.length ? `<ul class="items">${r.mine.map(songRow).join('')}</ul>`
+      body = r.mine.length ? `<p class="hint">Al lado de cada canción elegís quién la puede ver. Las de una lista que compartas las ven igual las personas con las que la compartiste.</p><ul class="items">${r.mine.map(mineRow).join('')}</ul>`
         : `<div class="empty">${q ? 'Ninguna de tus canciones coincide.' : 'Todavía no tenés canciones propias. Creá una con "+ Nueva" o agregá a tus canciones una que te hayan compartido.'}</div>`;
     } else if (songsTab === 'shared') {
       body = r.shared.length ? `<ul class="items">${r.shared.map(songRow).join('')}</ul>`
@@ -265,7 +278,7 @@ function songsView() {
     }
     view.innerHTML = `<div class="page">
       <div class="page-head"><h1>Canciones</h1>
-        <div class="row">${songsTab === 'mine' && r.mine.length ? '<button class="btn small" data-act="vis">Quién las ve…</button>' : ''}<a class="btn" href="#/nueva">+ Nueva</a></div></div>
+        <a class="btn" href="#/nueva">+ Nueva</a></div>
       <div class="tabs">${tab('mine', 'Mías', nMine)}${tab('shared', 'Compartidas conmigo', nShared)}${tab('others', 'Otras', store.catalog.length)}</div>
       ${!store.songs.size && !store.catalog.length && store.status !== 'ok' ? '<div class="empty">Cargando canciones…</div>' : body}
     </div>`;
@@ -280,32 +293,17 @@ function songsView() {
       catch (err) { toast(err.message); rq.disabled = false; }
       return;
     }
-    if (e.target.closest('[data-act=vis]')) bulkVisibility(tabResults().mine.map(x => x.song.path), q);
   };
   view.addEventListener('click', onClick);
+  view.addEventListener('change', onVisChange);
   render();
   return {
     ownsSearch: true,
     onSearch: v => { q = v; render(); },
     onSearchEnter: () => { const r = store.search(q)[0]; if (r) location.hash = songHash(r.song.path); },
     onStoreChange: render,
-    leave: () => view.removeEventListener('click', onClick),
+    leave: () => { view.removeEventListener('click', onClick); view.removeEventListener('change', onVisChange); },
   };
-}
-
-async function bulkVisibility(slugs, q) {
-  const v = await openDialog((d, close) => {
-    d.innerHTML = `<h2>Quién puede ver estas canciones</h2>
-      <p class="hint" style="margin-top:0">Se aplica a ${q ? `las <b>${slugs.length}</b> canciones tuyas que coinciden con "${esc(q)}"` : `<b>todas</b> tus canciones (${slugs.length})`}. Para cambiar sólo algunas, escribí primero en el buscador de arriba.</p>
-      ${VIS_OPTIONS.map(([val, t]) => `<label class="row vis-opt"><input type="radio" name="v" value="${val}"> ${esc(t)}</label>`).join('')}
-      <p class="hint">Las canciones de las listas que compartas igual las ven las personas con las que compartiste la lista.</p>
-      <div class="actions"><button class="btn" data-x>Cancelar</button><button class="btn primary" data-ok>Aplicar</button></div>`;
-    d.querySelector('[data-x]').onclick = () => close(null);
-    d.querySelector('[data-ok]').onclick = () => close(d.querySelector('input:checked')?.value || null);
-  });
-  if (!v) return;
-  try { const n = await store.setVisibility(slugs, v); toast(`Listo: ${n} canciones actualizadas`); }
-  catch (e) { toast('No se pudo cambiar: ' + e.message); }
 }
 
 // ---------------------------------------------------------------- vista: canción
@@ -347,7 +345,7 @@ function songView(path, lpath = null, idx = 0) {
         <span class="orig">${semis ? `${semis > 0 ? '+' : ''}${semis} · original ${esc(keyName(k, settings.notation))} <button data-act="reset">volver</button>` : 'tono original'}</span>
         <span class="spacer"></span>
         <span class="size-btns row">${settings.fit ? '' : '<button data-act="fit" aria-label="Ajustar al ancho" title="Ajustar al ancho de la pantalla">↔</button>'}<button data-act="smaller" aria-label="Letra más chica">A−</button><button data-act="bigger" aria-label="Letra más grande">A+</button></span>
-        ${entry.mine ? `<a class="btn small" href="#/editar/${encodeURIComponent(path)}">Editar</a>` : '<button class="btn small" data-act="copy">Agregar a mis canciones</button>'}
+        ${entry.mine ? `${visSelect(path, entry.visibility)}<a class="btn small" href="#/editar/${encodeURIComponent(path)}">Editar</a>` : '<button class="btn small" data-act="copy">Agregar a mis canciones</button>'}
         ${isDesktop || matchMedia('(min-width: 900px)').matches ? '<button class="btn small" data-act="print">Imprimir</button>' : ''}
         <button class="btn small" data-act="addlist">+ Lista</button>
       </div>
@@ -403,6 +401,7 @@ function songView(path, lpath = null, idx = 0) {
     }
   };
   view.addEventListener('click', onClick);
+  view.addEventListener('change', onVisChange);
 
   // deslizar a izquierda/derecha para cambiar de canción dentro de una lista
   let sx = 0, sy = 0;
@@ -430,7 +429,7 @@ function songView(path, lpath = null, idx = 0) {
       item = list.items[idx];
       render();
     },
-    leave: () => { window.removeEventListener('resize', onResize); view.removeEventListener('click', onClick); view.removeEventListener('touchstart', ts); view.removeEventListener('touchend', te); },
+    leave: () => { window.removeEventListener('resize', onResize); view.removeEventListener('click', onClick); view.removeEventListener('change', onVisChange); view.removeEventListener('touchstart', ts); view.removeEventListener('touchend', te); },
   };
 }
 

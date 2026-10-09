@@ -256,7 +256,9 @@ body.logged-out .search-wrap { visibility: hidden; }
 .tab { border: 1px solid var(--line); background: var(--bg); border-radius: 999px; padding: 7px 14px; font-size: 15px; white-space: nowrap; }
 .tab.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
 .tab.on .count { color: inherit; opacity: .7; }
-.item small.vis { color: var(--accent); }
+.mine-row { flex-wrap: wrap; }
+.mine-row .t { text-decoration: none; }
+.vis-sel { flex: none; width: min(46vw, 200px); padding: 5px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font-size: 14px; }
 .song-owner { color: var(--muted); font-size: 14px; margin-bottom: 2px; }
 .badge { display: inline-block; min-width: 20px; padding: 1px 6px; border-radius: 999px; background: var(--danger); color: #fff; font-size: 13px; text-align: center; margin-left: 6px; }
 .vis-opt { margin: 8px 0; align-items: flex-start; }
