@@ -68,6 +68,8 @@ async function boot() {
   route();
   if (store.loggedIn) store.sync();
   window.addEventListener('focus', () => store.sync());
+  // además, cada minuto mientras está abierta, para ver lo que comparten otros
+  setInterval(() => { if (!document.hidden) store.sync(); }, 60000);
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
     store.sync();
@@ -108,13 +110,11 @@ function setupChrome() {
     location.hash = '#/';
     route();
   };
-  $('#syncBtn').onclick = async () => { drawer.hidden = true; await store.sync(); toast(store.status === 'ok' ? 'Listo' : 'Error al sincronizar'); };
   updateChrome();
 
   const input = $('#search'), box = $('#searchResults');
   let sel = 0, results = [];
   const show = () => {
-    if (current?.ownsSearch) { box.hidden = true; current.onSearch(input.value); return; }
     const q = input.value.trim();
     if (!q) { box.hidden = true; return; }
     results = store.search(q).slice(0, 40);
@@ -135,7 +135,6 @@ function setupChrome() {
   input.addEventListener('input', show);
   input.addEventListener('focus', () => { if (input.value) show(); });
   input.addEventListener('keydown', e => {
-    if (current?.ownsSearch) { if (e.key === 'Enter') current.onSearchEnter?.(); return; }
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
       sel = Math.max(0, Math.min(results.length - 1, sel + (e.key === 'ArrowDown' ? 1 : -1)));
@@ -184,7 +183,6 @@ function route() {
   else if (parts[0] === 'ajustes') current = settingsView();
   else if (parts[0] === 'usuarios' && store.isAdmin) current = usersView();
   else current = songsView();
-  search.placeholder = current.ownsSearch ? 'Filtrar canciones…' : 'Buscar canción…';
 }
 
 // ---------------------------------------------------------------- vista: ingreso
@@ -240,45 +238,73 @@ function loginView() {
 
 // ---------------------------------------------------------------- vista: todas las canciones
 
-// pestaña elegida en la lista de canciones (se recuerda mientras la app está abierta)
+// filtros de la lista de canciones (se recuerdan mientras la app está abierta)
 let songsTab = null;
+let songsQuery = '';
+let songsVis = 'all';
 
 function songsView() {
-  let q = '';
   const tabResults = () => {
-    const all = store.search(q);
-    const mine = all.filter(r => r.song.mine), shared = all.filter(r => !r.song.mine);
-    const fq = fold(q).trim();
-    const others = store.catalog.filter(c => !fq || fold(c.title).includes(fq)).sort((a, b) => fold(a.title).localeCompare(fold(b.title)));
+    const all = store.search(songsQuery);
+    const mine = all.filter(r => r.song.mine && (songsVis === 'all' || r.song.visibility === songsVis));
+    const shared = all.filter(r => !r.song.mine);
+    const fq = fold(songsQuery).trim();
+    const others = store.catalog.filter(c => !fq || fold(c.title).includes(fq)).sort((x, y) => fold(x.title).localeCompare(fold(y.title)));
     return { mine, shared, others };
   };
+
+  // la página se arma una vez; al filtrar sólo se redibuja la lista (así el campo no pierde el foco)
+  view.innerHTML = `<div class="page">
+    <div class="page-head"><h1>Canciones</h1><a class="btn" href="#/nueva">+ Nueva</a></div>
+    <div class="tabs" data-tabs></div>
+    <div class="filters">
+      <input type="search" data-filter placeholder="Filtrar por título o letra…" autocomplete="off" spellcheck="false">
+      <select data-visfilter title="Filtrar por quién la puede ver">
+        <option value="all">Todas</option>${VIS_LABELS.map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}
+      </select>
+    </div>
+    <div data-body></div>
+  </div>`;
+  const filterIn = view.querySelector('[data-filter]');
+  const visIn = view.querySelector('[data-visfilter]');
+  filterIn.value = songsQuery;
+  visIn.value = songsVis;
+
   const render = () => {
     const r = tabResults();
-    const nMine = [...store.songs.values()].filter(s => s.mine).length;
+    const nMine = [...store.songs.values()].filter(x => x.mine).length;
     const nShared = store.songs.size - nMine;
     if (!songsTab) songsTab = nMine || !nShared ? 'mine' : 'shared';
+    const filtering = songsQuery.trim() || (songsTab === 'mine' && songsVis !== 'all');
     const tab = (id, label, n) => `<button class="tab${songsTab === id ? ' on' : ''}" data-tab="${id}">${label} <span class="count">${n}</span></button>`;
+    view.querySelector('[data-tabs]').innerHTML = tab('mine', 'Mías', nMine) + tab('shared', 'Compartidas conmigo', nShared) + tab('others', 'Otras', store.catalog.length);
+    visIn.hidden = songsTab !== 'mine';
     const songRow = x => `<li><a class="item" href="${songHash(x.song.path)}"><span class="t">${esc(x.song.title)}${x.snippet ? `<small>${esc(x.snippet)}</small>` : ''}<small>de ${esc(x.song.owner_name)}</small></span><span class="k">${esc(keyName(x.song.key, settings.notation))}</span></a></li>`;
     const mineRow = x => `<li class="item mine-row"><a class="t" href="${songHash(x.song.path)}">${esc(x.song.title)}${x.snippet ? `<small>${esc(x.snippet)}</small>` : ''}</a>${visSelect(x.song.path, x.song.visibility)}<span class="k">${esc(keyName(x.song.key, settings.notation))}</span></li>`;
     const otherRow = c => `<li class="item"><span class="t">🔒 ${esc(c.title)}<small>de ${esc(c.owner_name)}${c.copied ? ' · ya tenés una copia' : ''}</small></span><button class="btn small" data-copy="${esc(c.slug)}">Copiar</button></li>`;
+    const count = n => filtering ? `<p class="hint">${n} ${n === 1 ? 'canción' : 'canciones'}</p>` : '';
     let body;
-    if (songsTab === 'mine') {
-      body = r.mine.length ? `<p class="hint">Al lado de cada canción elegís quién la puede ver. Las de una lista que compartas las ven igual las personas con las que la compartiste.</p><ul class="items">${r.mine.map(mineRow).join('')}</ul>`
-        : `<div class="empty">${q ? 'Ninguna de tus canciones coincide.' : 'Todavía no tenés canciones propias. Creá una con "+ Nueva" o agregá a tus canciones una que te hayan compartido.'}</div>`;
+    if (!store.songs.size && !store.catalog.length && store.status !== 'ok') body = '<div class="empty">Cargando canciones…</div>';
+    else if (songsTab === 'mine') {
+      body = r.mine.length ? `${filtering ? count(r.mine.length) : '<p class="hint">Al lado de cada canción elegís quién la puede ver. Las de una lista que compartas las ven igual las personas con las que la compartiste.</p>'}<ul class="items">${r.mine.map(mineRow).join('')}</ul>`
+        : `<div class="empty">${filtering ? 'Ninguna de tus canciones coincide con el filtro.' : 'Todavía no tenés canciones propias. Creá una con "+ Nueva" o agregá a tus canciones una que te hayan compartido.'}</div>`;
     } else if (songsTab === 'shared') {
-      body = r.shared.length ? `<ul class="items">${r.shared.map(songRow).join('')}</ul>`
-        : `<div class="empty">${q ? 'Ninguna coincide.' : 'Acá aparecen las canciones de otros que podés ver: las de listas que te compartieron y las que sus dueños hicieron visibles.'}</div>`;
+      body = r.shared.length ? `${count(r.shared.length)}<ul class="items">${r.shared.map(songRow).join('')}</ul>`
+        : `<div class="empty">${filtering ? 'Ninguna coincide con el filtro.' : 'Acá aparecen las canciones de otros que podés ver: las de listas que te compartieron y las que sus dueños hicieron visibles.'}</div>`;
     } else {
-      body = r.others.length ? `<p class="hint">De estas canciones sólo se ve el título. Con "Copiar" se agrega una copia a tus canciones, que podés editar.</p><ul class="items">${r.others.map(otherRow).join('')}</ul>`
-        : `<div class="empty">${q ? 'Ninguna coincide.' : 'No hay canciones de otros con el título visible.'}</div>`;
+      body = r.others.length ? `<p class="hint">De estas canciones sólo se ve el título. Con "Copiar" se agrega una copia a tus canciones, que podés editar.</p>${count(r.others.length)}<ul class="items">${r.others.map(otherRow).join('')}</ul>`
+        : `<div class="empty">${filtering ? 'Ninguna coincide con el filtro.' : 'No hay canciones de otros con el título visible.'}</div>`;
     }
-    view.innerHTML = `<div class="page">
-      <div class="page-head"><h1>Canciones</h1>
-        <a class="btn" href="#/nueva">+ Nueva</a></div>
-      <div class="tabs">${tab('mine', 'Mías', nMine)}${tab('shared', 'Compartidas conmigo', nShared)}${tab('others', 'Otras', store.catalog.length)}</div>
-      ${!store.songs.size && !store.catalog.length && store.status !== 'ok' ? '<div class="empty">Cargando canciones…</div>' : body}
-    </div>`;
+    view.querySelector('[data-body]').innerHTML = body;
   };
+
+  filterIn.addEventListener('input', () => { songsQuery = filterIn.value; render(); });
+  filterIn.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    const r = tabResults()[songsTab === 'others' ? 'shared' : songsTab][0];
+    if (r) location.hash = songHash(r.song.path);
+  });
+  visIn.addEventListener('change', () => { songsVis = visIn.value; render(); });
   const onClick = async e => {
     const t = e.target.closest('[data-tab]');
     if (t) { songsTab = t.dataset.tab; render(); return; }
@@ -288,16 +314,12 @@ function songsView() {
       try { await store.copySong(cp.dataset.copy); toast('Copia agregada a "Mías"'); }
       catch (err) { toast('No se pudo copiar: ' + err.message); }
       cp.disabled = false;
-      return;
     }
   };
   view.addEventListener('click', onClick);
   view.addEventListener('change', onVisChange);
   render();
   return {
-    ownsSearch: true,
-    onSearch: v => { q = v; render(); },
-    onSearchEnter: () => { const r = store.search(q)[0]; if (r) location.hash = songHash(r.song.path); },
     onStoreChange: render,
     leave: () => { view.removeEventListener('click', onClick); view.removeEventListener('change', onVisChange); },
   };
