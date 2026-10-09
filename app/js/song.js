@@ -9,7 +9,7 @@
 // Un "acorde" entre corchetes puede contener anotaciones: [(RE LA SOL) x2], [FA#m-SOL].
 // Al transportar sólo cambian las palabras que son acordes.
 
-import { parseChord, transposeChord, parseKey, keyName, keyUsesFlats, isMinor, accidentals } from './chords.js';
+import { parseChord, transposeChord, normalizeChord, parseKey, keyName, keyUsesFlats, isMinor, accidentals } from './chords.js';
 
 const DIRECTIVE_RE = /^\{\s*([a-zA-Z_]+)\s*(?::\s*([\s\S]*?))?\s*\}$/;
 const ALIASES = { t: 'title', st: 'subtitle', k: 'key', c: 'comment', soc: 'start_of_chorus', eoc: 'end_of_chorus' };
@@ -85,8 +85,20 @@ const chordWords = s => (s.match(WORD_RE) || []).filter(w => parseChord(w));
 
 /** Transpone el texto de un "acorde" que puede tener anotaciones. */
 export function transposeChordText(text, semis, opts) {
-  if (!semis && !opts.forceNotation) return text;
-  return text.replace(WORD_RE, w => (parseChord(w) ? transposeChord(w, semis, opts) : w));
+  const change = semis || opts.forceNotation;
+  return text.replace(WORD_RE, w => (!parseChord(w) ? w : change ? transposeChord(w, semis, opts) : normalizeChord(w)));
+}
+
+/** Pasa a MAYÚSCULAS las notas de los acordes de un texto ChordPro (las anotaciones no se tocan). */
+export function normalizeChordsInText(text) {
+  // entre corchetes también se aceptan escritos en minúscula ("la7" -> "LA7")
+  const fix = w => {
+    if (parseChord(w)) return normalizeChord(w);
+    const cap = w.replace(/(^|[/(])([a-z])/g, (_, p, ch) => p + ch.toUpperCase());
+    return parseChord(cap) ? normalizeChord(cap) : w;
+  };
+  return text.split('\n').map(l => (/^\s*\{/.test(l) ? l
+    : l.replace(/\[([^\]]*)\]/g, (_, c) => `[${c.replace(WORD_RE, fix)}]`))).join('\n');
 }
 
 /** Tonalidad original de la canción: {key:} o, si falta, el primer acorde. */

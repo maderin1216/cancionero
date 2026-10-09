@@ -12,9 +12,12 @@ const FLAT_US = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'
 const FLAT_MAJOR = new Set([5, 10, 3, 8, 1]);   // FA SIb MIb LAb REb
 const FLAT_MINOR = new Set([2, 7, 0, 5, 10]);   // REm SOLm DOm FAm SIbm
 
-const ROOT_RE = '(DO|RE|MI|FA|SOL|LA|SI|Do|Re|Mi|Fa|Sol|La|Si|[A-G])([#b♯♭]?)';
+const ROOT_NAMES = 'DO|RE|MI|FA|SOL|LA|SI|Do|Re|Mi|Fa|Sol|La|Si|[A-G]';
+const ROOT_RE = `(${ROOT_NAMES})([#b♯♭]?)`;
+const NOTE_RE = `(?:${ROOT_NAMES})[#b♯♭]?`;
 const QUAL_RE = '((?:maj|min|dim|aug|sus|add|m|M|[0-9]|[+°º-])*)';
-const CHORD_RE = new RegExp(`^${ROOT_RE}${QUAL_RE}(?:\\((${ROOT_RE.slice(1, -1)}[#b♯♭]?)\\)|/(${ROOT_RE.slice(1, -1)}[#b♯♭]?))?$`);
+// grupos: 1 tónica · 2 alteración · 3 tipo (m, 7, sus4…) · 4 bajo entre paréntesis · 5 bajo con barra
+const CHORD_RE = new RegExp(`^${ROOT_RE}${QUAL_RE}(?:\\((${NOTE_RE})\\)|/(${NOTE_RE}))?$`);
 
 function rootIndex(name, acc) {
   const up = name.toUpperCase();
@@ -46,6 +49,17 @@ export function parseChord(str) {
 }
 
 export const isChordToken = t => parseChord(t) !== null;
+
+// la nota en mayúsculas (SIb, no Sib); la "b" de bemol queda en minúscula
+const upNote = (name, acc) => name.toUpperCase() + (acc === '♯' ? '#' : acc === '♭' ? 'b' : acc || '');
+
+/** Escribe un acorde con la nota en MAYÚSCULAS: "Sim" -> "SIm", "la7" no es acorde, "Fa#m/Do" -> "FA#m/DO". */
+export function normalizeChord(str) {
+  const m = str.match(CHORD_RE);
+  if (!m) return str;
+  const bass = s => { const b = s.match(new RegExp(`^${ROOT_RE}$`)); return upNote(b[1], b[2]); };
+  return upNote(m[1], m[2]) + (m[3] || '') + (m[4] ? `(${bass(m[4])})` : m[5] ? `/${bass(m[5])}` : '');
+}
 
 export const isMinor = q => /^m(?!aj)/.test(q) || q.startsWith('min');
 

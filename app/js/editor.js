@@ -1,9 +1,10 @@
 // Editor de canciones: texto ChordPro a la izquierda y vista previa interactiva a la derecha.
-// En la vista previa: clic en una letra = poner un acorde ahí; clic en un acorde = cambiarlo o
-// quitarlo; arrastrar un acorde = moverlo (incluso a otra línea).
-import { parseSong, parseLyricLine, songKey, transposeChordText, spellingFor } from './song.js';
+// En la vista previa: clic en una letra = ubicar el cursor ahí; después se elige el acorde con la
+// botonera o con el teclado (Ctrl+A = LA, Ctrl+Shift+A = LA#, Alt+A = LAm…). Clic en un acorde =
+// cambiarlo o quitarlo; arrastrar un acorde = moverlo (incluso a otra línea).
+import { parseSong, parseLyricLine, songKey, transposeChordText, spellingFor, normalizeChordsInText } from './song.js';
 import { renderLyricLine, separateChords } from './render.js';
-import { parseKey, keyName, noteName, keyUsesFlats } from './chords.js';
+import { parseKey, keyName, noteName, keyUsesFlats, accidentals } from './chords.js';
 import { chordsOverLyricsToChordPro } from './textimport.js';
 import { esc, debounce } from './util.js';
 import { toast, openDialog, confirmDialog } from './ui.js';
@@ -15,6 +16,20 @@ export const VIS_OPTIONS = [
 ];
 
 const DIRECTIVE_RE = /^\s*\{\s*([a-zA-Z_]+)\s*(?::\s*(.*?))?\s*\}\s*$/;
+
+// tipos de acorde de la botonera (se agregan a la nota que se toque después)
+const CHORD_TYPES = ['m', '7', 'm7', 'maj7', 'sus2', 'sus4', 'dim', 'aug', '6', '9', 'add9'];
+// atajos: la letra del teclado es la nota en cifrado americano (A = LA, B = SI, C = DO…)
+const KEY_NOTES = { KeyC: 0, KeyD: 2, KeyE: 4, KeyF: 5, KeyG: 7, KeyA: 9, KeyB: 11 };
+
+/** Desplegable de tonalidades: mayores y menores, escritas según la preferencia de sostenidos/bemoles. */
+function keySelectHtml(current) {
+  const k = parseKey(current);
+  const cur = k ? keyName(k) : '';
+  const opts = minor => Array.from({ length: 12 }, (_, r) => keyName({ root: r, minor }))
+    .map(n => `<option value="${n}" ${n === cur ? 'selected' : ''}>${n}</option>`).join('');
+  return `<select name="key"><option value="">— Elegí el tono —</option><optgroup label="Mayores">${opts(false)}</optgroup><optgroup label="Menores">${opts(true)}</optgroup></select>`;
+}
 
 // ---- una línea de letra como {text, chords:[{pos, name}]} y de vuelta
 export function lineToModel(line) {
@@ -64,7 +79,7 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
   const entry = path ? store.songs.get(path) : null;
   if (path && !entry) { view.innerHTML = '<div class="page empty">No se encontró la canción.</div>'; return {}; }
   if (entry && !entry.mine) { view.innerHTML = '<div class="page empty">Esta canción no es tuya: no la podés editar. Podés agregar una copia a tus canciones desde la canción.</div>'; return {}; }
-  const { meta, body } = splitSource(entry ? entry.text : '');
+  const { meta, body } = splitSource(normalizeChordsInText(entry ? entry.text : ''));
   const baseRev = entry?.rev; // versión que se empezó a editar, para detectar cambios de otros
   let dirty = false;
 
@@ -77,7 +92,7 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
       </div></div>
     <div class="ed-meta">
       <label class="field"><span>Título</span><input name="title" value="${esc(meta.title)}" placeholder="Nombre de la canción"></label>
-      <label class="field"><span>Tono original</span><input name="key" value="${esc(meta.key)}" placeholder="ej: SOL, MIm"></label>
+      <label class="field"><span>Tono original</span>${keySelectHtml(meta.key || (entry ? keyName(songKey(entry.song)) : ''))}</label>
       <label class="field"><span>Quién la puede ver</span><select name="visibility">${VIS_OPTIONS.map(([v, t]) => `<option value="${v}" ${v === (entry?.visibility || 'private') ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
       <div class="field"><span>Transportar y guardar</span><div class="row"><button class="btn small" data-act="tdown">− ½ tono</button><button class="btn small" data-act="tup">+ ½ tono</button></div></div>
     </div>
@@ -86,11 +101,18 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
       <button class="btn small" data-act="convert" title="Convierte texto con los acordes en la línea de arriba (pegado de internet o Word)">Convertir "acordes arriba"</button>
       <button class="btn small" data-act="help">¿Cómo se escribe?</button>
     </div>
+    <div class="chordbar">
+      <div class="cb-row" data-roots></div>
+      <div class="cb-row cb-types">${CHORD_TYPES.map(t => `<button type="button" data-type="${t}">${t}</button>`).join('')}
+        <button type="button" class="cb-del" data-act="delchord" title="Quitar el acorde de la sílaba marcada (Supr)">Quitar acorde</button></div>
+      <div class="cb-row" data-used></div>
+      <div class="hint cb-hint" data-target></div>
+    </div>
     <div class="ed-tabs"><button class="btn small" data-tab="src">Texto</button><button class="btn small" data-tab="pre">Acordes</button></div>
     <div class="ed-cols">
       <section data-sec="src"><h3>Texto (los acordes van entre corchetes: <code>[SOL]Ho[RE]la</code>)</h3>
         <textarea id="edSource" spellcheck="false" placeholder="Pegá o escribí la letra acá.&#10;&#10;Después hacé clic en la vista previa, sobre la sílaba donde cambia el acorde."></textarea></section>
-      <section data-sec="pre" class="on"><h3>Vista previa — clic en una sílaba para poner un acorde · arrastrá los acordes para moverlos</h3>
+      <section data-sec="pre" class="on"><h3>Vista previa — clic en una sílaba para marcarla y elegí el acorde · arrastrá los acordes para moverlos</h3>
         <div class="ed-preview song"></div></section>
     </div>
   </div>`;
@@ -101,6 +123,10 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
   const keyIn = view.querySelector('[name=key]');
   const visIn = view.querySelector('[name=visibility]');
   src.value = body;
+  const bar = view.querySelector('.chordbar');
+  let caret = null;       // {li, pos}: sílaba marcada en la vista previa
+  let chordType = '';     // tipo elegido en la botonera para el próximo acorde
+  let lastTarget = null;  // 'src' (cuadro de texto) o 'pre' (vista previa)
 
   const markDirty = () => { dirty = true; };
   const lines = () => src.value.split('\n');
@@ -131,6 +157,31 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
     });
     pre.innerHTML = html || '<div class="empty">Escribí la letra en el cuadro de texto.</div>';
     separateChords(pre);
+    showCaret();
+    renderBar();
+  }
+
+  function showCaret() {
+    pre.querySelector('.ch-hit.caret')?.classList.remove('caret');
+    if (!caret) return;
+    const el = pre.querySelector(`.ch-hit[data-li="${caret.li}"][data-pos="${caret.pos}"]`);
+    if (el) { el.classList.add('caret'); el.scrollIntoView({ block: 'nearest' }); }
+    else caret = null;
+  }
+
+  function renderBar() {
+    const flats = accidentals() === 'flat';
+    bar.querySelector('[data-roots]').innerHTML = Array.from({ length: 12 }, (_, i) => noteName(i, { flats }))
+      .map(n => `<button type="button" class="cb-root" data-root="${n}">${n}${chordType}</button>`).join('');
+    bar.querySelectorAll('[data-type]').forEach(b => b.classList.toggle('on', b.dataset.type === chordType));
+    const used = songChordNames();
+    bar.querySelector('[data-used]').innerHTML = used.length
+      ? `<span class="lbl">En la canción:</span>${used.map(c => `<button type="button" data-chord="${esc(c)}">${esc(c)}</button>`).join('')}`
+      : '';
+    const t = bar.querySelector('[data-target]');
+    t.textContent = caret ? 'El acorde va en la sílaba marcada. Flechas para moverte, Supr para quitar el acorde.'
+      : lastTarget === 'src' ? 'El acorde se escribe donde está el cursor del texto.'
+      : 'Hacé clic en la sílaba de la vista previa (o en el texto) donde va el acorde.';
   }
 
   function renderEditableLine(model, li, chorus) {
@@ -149,7 +200,7 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
       if (off + t.length === len) h += `<span class="ch-hit end" data-li="${li}" data-pos="${len}">   </span>`;
       return h;
     };
-    const html = renderLyricLine(parts, c => c, { textFn, chordAttrs: pi => ` data-li="${li}" data-pi="${ciOf[pi]}"` })
+    const html = renderLyricLine(parts, c => normalizeChordsInText(`[${c}]`).slice(1, -1), { textFn, chordAttrs: pi => ` data-li="${li}" data-pi="${ciOf[pi]}"` })
       .replace('<div class="line', '<div class="line has-chords');
     return chorus ? `<div class="chorus">${html}</div>` : html;
   }
@@ -192,14 +243,54 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
     });
   }
 
-  async function addChordAt(li, pos) {
-    const name = await chordDialog(null);
-    if (!name) return;
+  /** Pone el acorde donde está el cursor (sílaba marcada o cursor del texto). */
+  function insertChord(name) {
+    name = normalizeChordsInText(`[${name}]`).slice(1, -1);
+    if (lastTarget === 'src' && document.activeElement === src) {
+      src.setRangeText(`[${name}]`, src.selectionStart, src.selectionEnd, 'end');
+      markDirty();
+      renderPreview();
+      return;
+    }
+    if (!caret) { toast('Primero hacé clic en la sílaba donde va el acorde'); return; }
     const ls = lines();
-    const m = lineToModel(ls[li]);
-    m.chords.push({ pos, name });
-    ls[li] = modelToLine(m);
+    const m = lineToModel(ls[caret.li]);
+    // si ya había un acorde en esa sílaba, se reemplaza
+    m.chords = m.chords.filter(c => c.pos !== caret.pos);
+    m.chords.push({ pos: caret.pos, name });
+    ls[caret.li] = modelToLine(m);
     setLines(ls);
+  }
+
+  function removeChordAtCaret() {
+    if (!caret) return;
+    const ls = lines();
+    const m = lineToModel(ls[caret.li]);
+    const n = m.chords.length;
+    m.chords = m.chords.filter(c => c.pos !== caret.pos);
+    if (m.chords.length === n) return;
+    ls[caret.li] = modelToLine(m);
+    setLines(ls);
+  }
+
+  /** Mueve la sílaba marcada con las flechas. */
+  function moveCaret(key) {
+    const ls = lines();
+    const isLyric = i => i >= 0 && i < ls.length && ls[i].trim() && !DIRECTIVE_RE.test(ls[i]);
+    const len = i => lineToModel(ls[i]).text.length;
+    let { li, pos } = caret;
+    if (key === 'ArrowLeft') pos = Math.max(0, pos - 1);
+    else if (key === 'ArrowRight') pos = Math.min(len(li), pos + 1);
+    else {
+      const step = key === 'ArrowUp' ? -1 : 1;
+      let j = li + step;
+      while (j >= 0 && j < ls.length && !isLyric(j)) j += step;
+      if (!isLyric(j)) return;
+      li = j;
+      pos = Math.min(pos, len(j));
+    }
+    caret = { li, pos };
+    showCaret();
   }
 
   async function editChord(li, ci) {
@@ -208,7 +299,7 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
     const name = await chordDialog(m.chords[ci].name);
     if (name === null || name === undefined) return;
     if (name === '') m.chords.splice(ci, 1);
-    else m.chords[ci].name = name;
+    else m.chords[ci].name = normalizeChordsInText(`[${name}]`).slice(1, -1);
     ls[li] = modelToLine(m);
     setLines(ls);
   }
@@ -269,7 +360,24 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
   pre.addEventListener('pointercancel', endDrag);
   pre.addEventListener('click', e => {
     const hit = e.target.closest('.ch-hit');
-    if (hit) addChordAt(+hit.dataset.li, +hit.dataset.pos);
+    if (!hit) return;
+    caret = { li: +hit.dataset.li, pos: +hit.dataset.pos };
+    lastTarget = 'pre';
+    if (document.activeElement === src) src.blur();
+    showCaret();
+    renderBar();
+  });
+  src.addEventListener('focus', () => { lastTarget = 'src'; caret = null; showCaret(); renderBar(); });
+
+  // botonera: no le saca el foco al cuadro de texto (así se mantiene su cursor)
+  bar.addEventListener('pointerdown', e => { if (e.target.closest('button')) e.preventDefault(); });
+  bar.addEventListener('click', e => {
+    const t = e.target.closest('[data-type]');
+    if (t) { chordType = chordType === t.dataset.type ? '' : t.dataset.type; renderBar(); return; }
+    const r = e.target.closest('[data-root]');
+    if (r) { insertChord(r.dataset.root + chordType); chordType = ''; renderBar(); return; }
+    const c = e.target.closest('[data-chord]');
+    if (c) insertChord(c.dataset.chord);
   });
 
   // ---------------------------------------------------------------- barra de herramientas
@@ -320,13 +428,34 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
       renderPreview();
     }
     else if (a === 'help') helpDialog();
+    else if (a === 'delchord') { if (caret) removeChordAtCaret(); else toast('Marcá primero la sílaba en la vista previa'); }
   });
 
   src.addEventListener('input', debounce(() => { markDirty(); renderPreview(); }, 150));
   titleIn.addEventListener('input', markDirty);
-  keyIn.addEventListener('input', markDirty);
+  keyIn.addEventListener('change', markDirty);
   visIn.addEventListener('change', markDirty);
-  const onKey = e => { if (e.ctrlKey && e.key.toLowerCase() === 's') { e.preventDefault(); save(); } };
+  const onKey = e => {
+    if (e.ctrlKey && !e.altKey && e.key.toLowerCase() === 's') { e.preventDefault(); save(); return; }
+    if (document.querySelector('.overlay')) return;  // hay un diálogo abierto
+    const inField = e.target.closest?.('input, select');
+    // acordes: Ctrl+letra = mayor, Alt+letra = menor; con Shift, sostenido.
+    // Ctrl+Alt juntos es AltGr en teclados en español: no se toca.
+    const note = KEY_NOTES[e.code];
+    if (note !== undefined && !inField && !e.metaKey && (e.ctrlKey !== e.altKey)) {
+      // Ctrl+C con texto seleccionado sigue copiando
+      if (e.ctrlKey && e.code === 'KeyC' && e.target === src && src.selectionStart !== src.selectionEnd) return;
+      e.preventDefault();
+      insertChord(noteName(note + (e.shiftKey ? 1 : 0), { flats: false }) + (e.altKey ? 'm' : ''));
+      return;
+    }
+    // la sílaba marcada se mueve con las flechas y Supr quita su acorde
+    if (caret && !inField && e.target !== src && !e.ctrlKey && !e.altKey) {
+      if (e.key.startsWith('Arrow')) { e.preventDefault(); moveCaret(e.key); }
+      else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); removeChordAtCaret(); }
+      else if (e.key === 'Escape') { caret = null; showCaret(); renderBar(); }
+    }
+  };
   document.addEventListener('keydown', onKey);
   const onUnload = e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } };
   window.addEventListener('beforeunload', onUnload);
@@ -336,7 +465,7 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
     if (!title) { toast('Poné un título'); titleIn.focus(); return; }
     let key = keyIn.value.trim();
     if (!key) { const k = songKey(parseSong(src.value)); if (k) key = keyName(k); }
-    const text = `{title: ${title}}\n${key ? `{key: ${key}}\n` : ''}\n${src.value.replace(/\s+$/, '')}\n`;
+    const text = `{title: ${title}}\n${key ? `{key: ${key}}\n` : ''}\n${normalizeChordsInText(src.value.replace(/\s+$/, ''))}\n`;
     try {
       const p = await store.saveSong(path, text, { baseRev, visibility: visIn.value });
       dirty = false;
@@ -368,7 +497,10 @@ function helpDialog() {
   openDialog((d, close) => {
     d.innerHTML = `<h2>Cómo se escribe una canción</h2>
       <div class="hint">
-      <p><b>La forma fácil:</b> escribí o pegá sólo la letra y después hacé clic en la vista previa, sobre la sílaba donde cambia el acorde. Para mover un acorde, arrastralo. Para cambiarlo o quitarlo, hacé clic encima.</p>
+      <p><b>La forma fácil:</b> escribí o pegá sólo la letra. Después hacé clic en la vista previa sobre la sílaba donde cambia el acorde y tocá el acorde en la botonera (para un menor o un séptimo, tocá primero "m" o "7"). Para mover un acorde, arrastralo; para cambiarlo, hacé clic encima.</p>
+      <p><b>Con el teclado</b> (la letra es la nota en cifrado americano: A=LA, B=SI, C=DO, D=RE, E=MI, F=FA, G=SOL):<br>
+        <code>Ctrl+A</code> = LA · <code>Ctrl+Shift+A</code> = LA# · <code>Alt+A</code> = LAm · <code>Alt+Shift+A</code> = LA#m<br>
+        Las flechas mueven la sílaba marcada y <code>Supr</code> quita su acorde. Los acordes se escriben siempre en MAYÚSCULAS.</p>
       <p><b>En el texto</b> los acordes van entre corchetes, justo antes de la sílaba:<br><code>[SOL]Hecha un mar de [MIm]lágrimas</code></p>
       <p><b>Estribillo</b> (se ve en negrita): entre <code>{soc}</code> y <code>{eoc}</code>, o seleccioná las líneas y tocá "Marcar estribillo".</p>
       <p><b>Comentario</b> (ej. "Intro", "x2"): <code>{c: Intro}</code></p>

@@ -266,3 +266,17 @@ body.logged-out .search-wrap { visibility: hidden; }
 .filters input { flex: 1; min-width: 0; height: 40px; padding: 0 12px; font-size: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--soft); }
 .filters input:focus { background: var(--bg); border-color: var(--accent); outline: none; }
 .filters select { flex: none; width: min(42vw, 200px); padding: 0 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); font-size: 14px; }
+
+/* ---------- botonera de acordes del editor ---------- */
+.chordbar { position: sticky; top: var(--top); z-index: 5; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 8px; margin: 0 0 10px; }
+.cb-row { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-bottom: 6px; }
+.cb-row:empty { display: none; }
+.cb-row button { padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font-weight: 700; min-width: 44px; }
+.cb-row button:hover { background: var(--soft); }
+.cb-root { font-size: 16px; }
+.cb-types button { font-weight: 400; min-width: 0; }
+.cb-types button.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.cb-row .cb-del { margin-left: auto; color: var(--danger); font-weight: 400; }
+.cb-row .lbl { font-size: 13px; color: var(--muted); margin-right: 2px; }
+.cb-hint { margin: 0; font-size: 13px; }
+.ed-preview .ch-hit.caret { background: var(--hl-drop); box-shadow: inset 2px 0 0 var(--accent); border-radius: 2px; }
