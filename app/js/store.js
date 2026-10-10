@@ -11,6 +11,7 @@ import { fold } from './util.js';
 
 const SESSION_KEY = 'cancionero.session';
 const CACHE_KEY = 'cancionero.v2.cache';
+const AUDIO_CACHE = 'cancionero-audio'; // audios guardados en el dispositivo (los de las listas)
 
 export class ApiError extends Error {
   constructor(status, data) { super(data?.error || `Error ${status}`); this.status = status; this.data = data || {}; }
@@ -84,6 +85,7 @@ export class ApiStore extends EventTarget {
 
   async logout() {
     try { await this.api('POST', '/api/logout'); } catch { /* igual se cierra localmente */ }
+    try { await caches.delete(AUDIO_CACHE); } catch { /* nada guardado */ }
     this.clearSession();
     localStorage.removeItem(CACHE_KEY);
     this.rawSongs = {}; this.rawLists = []; this.catalog = [];
@@ -147,7 +149,7 @@ export class ApiStore extends EventTarget {
         const next = {};
         for (const s of r.songs) {
           const text = s.text ?? this.rawSongs[s.slug]?.text;
-          if (text !== undefined) next[s.slug] = { text, rev: s.rev, mine: s.mine, owner_name: s.owner_name, visibility: s.visibility };
+          if (text !== undefined) next[s.slug] = { text, rev: s.rev, mine: s.mine, owner_name: s.owner_name, visibility: s.visibility, audio: s.audio };
         }
         this.rawSongs = next;
         this.rawLists = r.lists;
@@ -156,6 +158,7 @@ export class ApiStore extends EventTarget {
         this.saveCache();
         this.rebuild();
         this.setStatus('ok');
+        this.prefetchAudio(); // en segundo plano
       } catch (e) {
         console.error(e);
         this.setStatus(e.status === 401 ? 'idle' : 'error', e);
@@ -190,6 +193,70 @@ export class ApiStore extends EventTarget {
   }
 
   songHistory(slug) { return this.api('GET', `/api/songs/${slug}/history`); }
+
+  // ---------------------------------------------------------------- audio de las canciones
+
+  audioUrl(slug) {
+    const a = this.rawSongs[slug]?.audio;
+    return a ? `${this.apiBase || location.origin}/api/songs/${slug}/audio?v=${a.v}` : null;
+  }
+
+  async fetchAudio(slug) {
+    const r = await fetch(this.apiBase + `/api/songs/${slug}/audio`, { headers: { Authorization: `Bearer ${this.token}` }, cache: 'no-store' });
+    if (!r.ok) throw new Error(r.status === 404 ? 'Esta canción no tiene audio' : 'No se pudo cargar el audio (¿sin conexión?)');
+    return r.blob();
+  }
+
+  /** El audio de una canción: del dispositivo si ya está guardado, si no del servidor. */
+  async audioBlob(slug) {
+    const url = this.audioUrl(slug);
+    if (!url) throw new Error('Esta canción no tiene audio');
+    let cache = null;
+    try { cache = await caches.open(AUDIO_CACHE); } catch { /* sin caché disponible */ }
+    const hit = await cache?.match(url);
+    if (hit) return hit.blob();
+    const blob = await this.fetchAudio(slug);
+    try { await cache?.put(url, new Response(blob, { headers: { 'Content-Type': blob.type } })); } catch { /* sin lugar */ }
+    return blob;
+  }
+
+  /** Guarda en el dispositivo los audios de las canciones de las listas y borra los que ya no hacen falta. */
+  async prefetchAudio() {
+    if (this.prefetching) return;
+    this.prefetching = true;
+    try {
+      const cache = await caches.open(AUDIO_CACHE);
+      const wanted = new Set();
+      for (const l of this.rawLists) for (const it of l.items) { const u = this.audioUrl(it.song); if (u) wanted.add(u); }
+      for (const req of await cache.keys()) if (!wanted.has(req.url)) await cache.delete(req);
+      for (const url of wanted) {
+        if (await cache.match(url)) continue;
+        const slug = decodeURIComponent(new URL(url).pathname.split('/')[3]);
+        try { await cache.put(url, new Response(await this.fetchAudio(slug))); } catch { /* se reintenta en la próxima sincronización */ }
+      }
+    } catch { /* caché no disponible */ }
+    finally { this.prefetching = false; }
+  }
+
+  async uploadAudio(slug, blob, duration) {
+    const r = await fetch(this.apiBase + `/api/songs/${slug}/audio`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': blob.type, 'X-Duration': String(duration) },
+      body: blob,
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new ApiError(r.status, data);
+    this.rawSongs[slug].audio = data;
+    this.saveCache();
+    this.rebuild();
+  }
+
+  async deleteAudio(slug) {
+    await this.api('DELETE', `/api/songs/${slug}/audio`);
+    this.rawSongs[slug].audio = null;
+    this.saveCache();
+    this.rebuild();
+  }
 
   /** Cambia quién puede ver estas canciones propias: 'private' | 'title' | 'public'. */
   async setVisibility(slugs, visibility) {
@@ -286,13 +353,13 @@ export class ApiStore extends EventTarget {
 
 const newItemId = () => crypto.getRandomValues(new Uint32Array(1))[0].toString(36);
 
-function makeSongEntry(path, { text, rev, mine, owner_name, visibility }) {
+function makeSongEntry(path, { text, rev, mine, owner_name, visibility, audio }) {
   let parsed;
   try { parsed = parseSong(text); } catch { parsed = { meta: {}, lines: [] }; }
   const title = parsed.meta.title || path;
   const plain = songPlainText(parsed);
   return {
-    path, text, rev, song: parsed, title, mine: mine !== false, owner_name, visibility: visibility || 'private',
+    path, text, rev, song: parsed, title, mine: mine !== false, owner_name, visibility: visibility || 'private', audio: audio || null,
     key: songKey(parsed),
     sortKey: fold(title).replace(/^[¡¿"'(]+/, ''),
     plain,

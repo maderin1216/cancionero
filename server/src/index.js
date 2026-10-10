@@ -15,6 +15,8 @@ const MAX_FAILED = 8;          // intentos fallidos antes de bloquear
 const LOCK_MS = 15 * 60 * 1000;
 const ROLES = ['admin', 'editor']; // 'editor' = usuario común
 const VISIBILITIES = ['private', 'title', 'public'];
+const AUDIO_MAX_BYTES = 1600000;  // ~30 s de audio comprimido o WAV mono liviano
+const AUDIO_MAX_SECONDS = 30.5;
 
 // Orígenes que pueden llamar a la API desde otro dominio (la app de escritorio y desarrollo).
 const ALLOWED_ORIGINS = ['app://cancionero', 'http://localhost:5180', 'http://localhost:8787'];
@@ -30,12 +32,16 @@ export default {
     if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(req);
     const origin = req.headers.get('Origin');
     const cors = origin && ALLOWED_ORIGINS.includes(origin)
-      ? { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Headers': 'Authorization, Content-Type', 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE', 'Access-Control-Max-Age': '86400', Vary: 'Origin' }
+      ? { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Duration', 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE', 'Access-Control-Max-Age': '86400', Vary: 'Origin' }
       : {};
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     let status = 200, body;
     try {
       body = await route(req, env, url);
+      if (body instanceof Response) {
+        for (const [k, v] of Object.entries(cors)) body.headers.set(k, v);
+        return body;
+      }
     } catch (e) {
       if (e instanceof HttpError) { status = e.status; body = { error: e.message, ...e.extra }; }
       else { console.error(e); status = 500; body = { error: 'Error interno del servidor' }; }
@@ -86,6 +92,11 @@ async function route(req, env, url) {
   }
   if ((mt = p.match(/^\/api\/songs\/([a-z0-9-]+)\/history$/)) && m === 'GET') return songHistory(db, me, mt[1]);
   if ((mt = p.match(/^\/api\/songs\/([a-z0-9-]+)\/copy$/)) && m === 'POST') return copyVisibleSong(db, me, mt[1]);
+  if ((mt = p.match(/^\/api\/songs\/([a-z0-9-]+)\/audio$/))) {
+    if (m === 'GET') return getAudio(db, me, mt[1]);
+    if (m === 'PUT') return putAudio(db, me, mt[1], req);
+    if (m === 'DELETE') return deleteAudio(db, me, mt[1]);
+  }
 
   // listas
   if (p === '/api/lists' && m === 'POST') return createList(db, me, await readJson(req));
@@ -229,10 +240,12 @@ async function getOwnSong(db, me, slug) {
  */
 async function sync(db, me, have) {
   const now = Date.now();
-  const [songsRes, lists] = await Promise.all([
+  const [songsRes, lists, audioRes] = await Promise.all([
     db.prepare('SELECT s.id, s.slug, s.text, s.rev, s.owner_id, s.visibility, s.copied_from, u.name AS owner_name FROM songs s JOIN users u ON u.id = s.owner_id WHERE s.deleted = 0').all(),
     visibleLists(db, me),
+    db.prepare('SELECT song_id, updated_at, duration FROM song_audio').all(),
   ]);
+  const audio = new Map(audioRes.results.map(a => [a.song_id, { v: a.updated_at, d: a.duration }]));
   const grants = listGrants(lists, me);
   const songs = [], catalog = [];
   const titles = {};
@@ -243,7 +256,7 @@ async function sync(db, me, have) {
     const mine = s.owner_id === me.id;
     if (canViewSong(s, me, grants)) {
       songs.push({
-        slug: s.slug, rev: s.rev, mine, owner_name: s.owner_name, visibility: s.visibility,
+        slug: s.slug, rev: s.rev, mine, owner_name: s.owner_name, visibility: s.visibility, audio: audio.get(s.id) || null,
         ...(have[s.slug] === s.rev ? {} : { text: s.text }),
       });
     } else if (s.visibility === 'title') {
@@ -298,9 +311,9 @@ async function freeSlug(db, base) {
 async function insertSong(db, ownerId, text, { visibility = 'private', copiedFrom = null, slugBase } = {}) {
   const slug = await freeSlug(db, slugBase || slugify(songTitle(text)));
   const now = Date.now();
-  await db.prepare('INSERT INTO songs (slug, text, rev, updated_at, updated_by, owner_id, visibility, copied_from) VALUES (?, ?, 1, ?, ?, ?, ?, ?)')
-    .bind(slug, text, now, ownerId, ownerId, visibility, copiedFrom).run();
-  return { slug, rev: 1, updated_at: now };
+  const r = await db.prepare('INSERT INTO songs (slug, text, rev, updated_at, updated_by, owner_id, visibility, copied_from) VALUES (?, ?, 1, ?, ?, ?, ?, ?) RETURNING id')
+    .bind(slug, text, now, ownerId, ownerId, visibility, copiedFrom).first();
+  return { slug, rev: 1, updated_at: now, id: r.id };
 }
 
 async function createSong(db, me, body) {
@@ -365,7 +378,47 @@ async function copyVisibleSong(db, me, slug) {
   if (s.owner_id === me.id) fail(400, 'Esta canción ya es tuya');
   const grants = listGrants(await visibleLists(db, me), me);
   if (s.visibility !== 'title' && !canViewSong(s, me, grants)) fail(403, 'No tenés acceso a esta canción');
-  return insertSong(db, me.id, s.text, { copiedFrom: s.id, slugBase: `${slugify(songTitle(s.text))}-${me.username.replace(/[^a-z0-9]+/g, '-')}` });
+  const copy = await insertSong(db, me.id, s.text, { copiedFrom: s.id, slugBase: `${slugify(songTitle(s.text))}-${me.username.replace(/[^a-z0-9]+/g, '-')}` });
+  await db.prepare(`INSERT INTO song_audio (song_id, mime, data, duration, size, updated_at, updated_by)
+    SELECT ?, mime, data, duration, size, ?, ? FROM song_audio WHERE song_id = ?`).bind(copy.id, Date.now(), me.id, s.id).run();
+  return copy;
+}
+
+// ---------------------------------------------------------------- audio de la canción
+
+async function getAudio(db, me, slug) {
+  const s = await getSong(db, slug);
+  if (s.owner_id !== me.id) {
+    const grants = listGrants(await visibleLists(db, me), me);
+    if (!canViewSong(s, me, grants)) fail(403, 'No tenés acceso a esta canción');
+  }
+  const a = await db.prepare('SELECT mime, data FROM song_audio WHERE song_id = ?').bind(s.id).first();
+  if (!a) fail(404, 'Esta canción no tiene audio');
+  // no-store: el navegador no lo guarda (lo guarda la app, y sólo si corresponde)
+  return new Response(new Uint8Array(a.data), { headers: { 'Content-Type': a.mime, 'Cache-Control': 'no-store' } });
+}
+
+async function putAudio(db, me, slug, req) {
+  const s = await getOwnSong(db, me, slug);
+  const mime = (req.headers.get('Content-Type') || '').split(';')[0].trim();
+  if (!/^audio\/[a-z0-9.+-]+$/i.test(mime)) fail(400, 'El archivo no es un audio');
+  const duration = parseFloat(req.headers.get('X-Duration') || '');
+  if (!(duration > 0 && duration <= AUDIO_MAX_SECONDS)) fail(400, 'El audio puede durar hasta 30 segundos');
+  const data = await req.arrayBuffer();
+  if (!data.byteLength) fail(400, 'El audio está vacío');
+  if (data.byteLength > AUDIO_MAX_BYTES) fail(400, 'El audio es demasiado pesado');
+  const now = Date.now();
+  await db.prepare(`INSERT INTO song_audio (song_id, mime, data, duration, size, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (song_id) DO UPDATE SET mime = excluded.mime, data = excluded.data, duration = excluded.duration,
+    size = excluded.size, updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
+    .bind(s.id, mime, data, duration, data.byteLength, now, me.id).run();
+  return { v: now, d: duration };
+}
+
+async function deleteAudio(db, me, slug) {
+  const s = await getOwnSong(db, me, slug);
+  await db.prepare('DELETE FROM song_audio WHERE song_id = ?').bind(s.id).run();
+  return {};
 }
 
 // ---------------------------------------------------------------- listas

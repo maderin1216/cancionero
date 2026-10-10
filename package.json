@@ -1,6 +1,6 @@
 {
   "name": "cancionero",
-  "version": "2.8.0",
+  "version": "2.9.0",
   "main": "electron/main.mjs",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",

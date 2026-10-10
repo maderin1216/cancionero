@@ -1,5 +1,5 @@
 // App de escritorio: muestra la misma app web (los datos vienen del servidor, como en el celular).
-import { app, BrowserWindow, Menu, protocol, net, shell } from 'electron';
+import { app, BrowserWindow, Menu, protocol, net, shell, session, desktopCapturer } from 'electron';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -26,6 +26,10 @@ function createWindow() {
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null); // sin menú: Alt+letra queda libre para los atajos de acordes
+  // "Grabar lo que suena en la PC": se entrega el audio del sistema (la imagen la descarta la app)
+  session.defaultSession.setDisplayMediaRequestHandler((_req, cb) => {
+    desktopCapturer.getSources({ types: ['screen'] }).then(src => cb({ video: src[0], audio: 'loopback' })).catch(() => cb({}));
+  });
   protocol.handle('app', req => {
     const { pathname } = new URL(req.url);
     const file = path.join(appDir, decodeURIComponent(pathname));

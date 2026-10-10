@@ -286,3 +286,13 @@ body.logged-out .search-wrap { visibility: hidden; }
 .cb-row .lbl { font-size: 13px; color: var(--muted); margin-right: 2px; }
 .cb-hint { margin: 0; font-size: 13px; }
 .ed-preview .ch-hit.caret { background: var(--hl-drop); box-shadow: inset 2px 0 0 var(--accent); border-radius: 2px; }
+
+/* ---------- audio de la canción ---------- */
+.has-audio { font-size: .8em; }
+.audio-btn .hint { font-size: 12px; margin-left: 2px; }
+.audio-src { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.audio-src .btn { justify-content: center; padding: 12px; font-size: 16px; }
+.wave { display: block; width: 100%; height: 90px; margin: 6px 0; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; color: var(--ink); touch-action: none; }
+.rec-time { font-size: 22px; display: flex; align-items: center; gap: 8px; }
+.rec-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--danger); animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: .2; } }

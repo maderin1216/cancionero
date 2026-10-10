@@ -7,6 +7,7 @@ import { keyName, setAccidentals } from './chords.js';
 import { esc, debounce, formatDate, fold } from './util.js';
 import { toast, openDialog, confirmDialog, formDialog } from './ui.js';
 import { renderEditor } from './editor.js';
+import { audioDialog, togglePlay, stopPlayer, fmtTime } from './audio.js';
 
 // ---------------------------------------------------------------- ajustes (de cada dispositivo)
 
@@ -279,8 +280,8 @@ function songsView() {
     const tab = (id, label, n) => `<button class="tab${songsTab === id ? ' on' : ''}" data-tab="${id}">${label} <span class="count">${n}</span></button>`;
     view.querySelector('[data-tabs]').innerHTML = tab('mine', 'Mías', nMine) + tab('shared', 'Compartidas conmigo', nShared) + tab('others', 'Otras', store.catalog.length);
     visIn.hidden = songsTab !== 'mine';
-    const songRow = x => `<li><a class="item" href="${songHash(x.song.path)}"><span class="t">${esc(x.song.title)}${x.snippet ? `<small>${esc(x.snippet)}</small>` : ''}<small>de ${esc(x.song.owner_name)}</small></span><span class="k">${esc(keyName(x.song.key, settings.notation))}</span></a></li>`;
-    const mineRow = x => `<li class="item mine-row"><a class="t" href="${songHash(x.song.path)}">${esc(x.song.title)}${x.snippet ? `<small>${esc(x.snippet)}</small>` : ''}</a>${visSelect(x.song.path, x.song.visibility)}<span class="k">${esc(keyName(x.song.key, settings.notation))}</span></li>`;
+    const songRow = x => `<li><a class="item" href="${songHash(x.song.path)}"><span class="t">${esc(x.song.title)}${x.song.audio ? ' <span class="has-audio" title="Tiene audio">🔊</span>' : ''}${x.snippet ? `<small>${esc(x.snippet)}</small>` : ''}<small>de ${esc(x.song.owner_name)}</small></span><span class="k">${esc(keyName(x.song.key, settings.notation))}</span></a></li>`;
+    const mineRow = x => `<li class="item mine-row"><a class="t" href="${songHash(x.song.path)}">${esc(x.song.title)}${x.song.audio ? ' <span class="has-audio" title="Tiene audio">🔊</span>' : ''}${x.snippet ? `<small>${esc(x.snippet)}</small>` : ''}</a>${visSelect(x.song.path, x.song.visibility)}<span class="k">${esc(keyName(x.song.key, settings.notation))}</span></li>`;
     const otherRow = c => `<li class="item"><span class="t">🔒 ${esc(c.title)}<small>de ${esc(c.owner_name)}${c.copied ? ' · ya tenés una copia' : ''}</small></span><button class="btn small" data-copy="${esc(c.slug)}">Copiar</button></li>`;
     const count = n => filtering ? `<p class="hint">${n} ${n === 1 ? 'canción' : 'canciones'}</p>` : '';
     let body;
@@ -362,6 +363,8 @@ function songView(path, lpath = null, idx = 0) {
       <div class="song-tools">
         <span class="keybox"><button data-act="down" aria-label="Bajar medio tono">−</button><button class="key" data-act="keys">${esc(shown || '—')}</button><button data-act="up" aria-label="Subir medio tono">+</button></span>
         <span class="orig">${semis ? `${semis > 0 ? '+' : ''}${semis} · original ${esc(keyName(k, settings.notation))} <button data-act="reset">volver</button>` : 'tono original'}</span>
+        ${entry.audio ? `<button class="btn small audio-btn" data-act="play">▶ Escuchar <span class="hint">${fmtTime(entry.audio.d)}</span></button>` : ''}
+        ${entry.mine ? `<button class="btn small" data-act="audio">🎙 ${entry.audio ? 'Cambiar audio' : 'Agregar audio'}</button>` : ''}
         <span class="spacer"></span>
         <span class="size-btns row">${settings.fit ? '' : '<button data-act="fit" aria-label="Ajustar al ancho" title="Ajustar al ancho de la pantalla">↔</button>'}<button data-act="smaller" aria-label="Letra más chica">A−</button><button data-act="bigger" aria-label="Letra más grande">A+</button></span>
         ${entry.mine ? `${visSelect(path, entry.visibility)}<a class="btn small" href="#/editar/${encodeURIComponent(path)}">Editar</a>` : '<button class="btn small" data-act="copy">Agregar a mis canciones</button>'}
@@ -413,6 +416,24 @@ function songView(path, lpath = null, idx = 0) {
     }
     else if (a === 'print') window.print();
     else if (a === 'addlist') addToListDialog(path, semis);
+    else if (a === 'play') {
+      togglePlay(path, () => store.audioBlob(path), (st, t) => {
+        const btn = view.querySelector('[data-act=play]');
+        if (!btn) return;
+        const total = fmtTime(entry.audio?.d || 0);
+        btn.innerHTML = st === 'loading' ? 'Cargando…'
+          : st === 'playing' ? `■ Detener <span class="hint">${fmtTime(t)} / ${total}</span>`
+          : `▶ Escuchar <span class="hint">${total}</span>`;
+      });
+    }
+    else if (a === 'audio') {
+      stopPlayer();
+      await audioDialog({
+        title: entry.title, hasAudio: !!entry.audio, desktop: isDesktop,
+        save: async (blob, dur) => { await store.uploadAudio(path, blob, dur); toast('Audio guardado'); },
+        remove: () => store.deleteAudio(path),
+      });
+    }
     else if (a === 'copy') {
       try { await store.copySong(path); toast('Copia agregada a "Mías"'); }
       catch (err) { toast('No se pudo copiar: ' + err.message); }
@@ -447,7 +468,7 @@ function songView(path, lpath = null, idx = 0) {
       item = list.items[idx];
       render();
     },
-    leave: () => { window.removeEventListener('resize', onResize); view.removeEventListener('click', onClick); view.removeEventListener('change', onVisChange); view.removeEventListener('touchstart', ts); view.removeEventListener('touchend', te); },
+    leave: () => { stopPlayer(); window.removeEventListener('resize', onResize); view.removeEventListener('click', onClick); view.removeEventListener('change', onVisChange); view.removeEventListener('touchstart', ts); view.removeEventListener('touchend', te); },
   };
 }
 
