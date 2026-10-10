@@ -147,6 +147,10 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 .song .line.chords-only { padding-top: 0; margin-bottom: .1em; line-height: 1.22; }
 .song .chords-only .a { position: static; }
 .song .chords-only .ch { position: static; margin-right: .6em; }
+.song .line.chords-only { font-weight: 700; }
+.song .chorus .line.chords-only { font-weight: 400; }
+/* si la línea ya trae espacios entre los acordes ("[RE LA SIm]"), no agregar más */
+.song .chords-only.marks .ch { margin-right: 0; }
 .song .blank { height: .9em; }
 .song .chorus .line { font-weight: 700; }
 /* en el estribillo la letra va en negrita y los acordes no (como en los PDF) */

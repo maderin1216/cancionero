@@ -43,7 +43,7 @@ export function parseSong(text) {
 /** "[SOL]Hecha un [MIm]mar" -> [{chord:'SOL', text:'Hecha un '}, {chord:'MIm', text:'mar'}] */
 export function parseLyricLine(line) {
   const parts = [];
-  const re = /\[([^\]]*)\]/g;
+  const re = /\[([^[\]]*)\]/g;
   let last = 0, m, chord = null;
   while ((m = re.exec(line))) {
     const text = line.slice(last, m.index);
@@ -98,7 +98,7 @@ export function normalizeChordsInText(text) {
     return parseChord(cap) ? normalizeChord(cap) : w;
   };
   return text.split('\n').map(l => (/^\s*\{/.test(l) ? l
-    : l.replace(/\[([^\]]*)\]/g, (_, c) => `[${c.replace(WORD_RE, fix)}]`))).join('\n');
+    : l.replace(/\[([^[\]]*)\]/g, (_, c) => `[${c.replace(WORD_RE, fix)}]`))).join('\n');
 }
 
 /** Tonalidad original de la canción: {key:} o, si falta, el primer acorde. */

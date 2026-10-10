@@ -35,7 +35,7 @@ function keySelectHtml(current) {
 export function lineToModel(line) {
   const chords = [];
   let text = '', last = 0, m;
-  const re = /\[([^\]]*)\]/g;
+  const re = /\[([^[\]]*)\]/g;
   while ((m = re.exec(line))) {
     text += line.slice(last, m.index);
     chords.push({ pos: text.length, name: m[1] });
@@ -386,7 +386,7 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
     const k = parseKey(keyIn.value) || songKey(parseSong(src.value));
     const opts = spellingFor(k, semis, 'latin');
     opts.forceNotation = false;
-    setLines(lines().map(l => (DIRECTIVE_RE.test(l) ? l : l.replace(/\[([^\]]*)\]/g, (_, c) => `[${transposeChordText(c, semis, opts)}]`))));
+    setLines(lines().map(l => (DIRECTIVE_RE.test(l) ? l : l.replace(/\[([^[\]]*)\]/g, (_, c) => `[${transposeChordText(c, semis, opts)}]`))));
     if (k) keyIn.value = keyName({ root: (k.root + semis + 12) % 12, minor: k.minor });
   };
 

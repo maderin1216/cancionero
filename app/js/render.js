@@ -3,17 +3,26 @@
 import { transposeChordText, spellingFor } from './song.js';
 import { esc } from './util.js';
 
+const MARKS_RE = /^[\s[\](){}\-–—|/.,:;→←♪]*(?:(?:x\d+|\d+x|bis)[\s[\](){}\-–—|/.,:;→←♪]*)?$/i;
+export const isMarks = t => MARKS_RE.test(t);
+
+const plainText = t => esc(t);
+
 /** HTML de una línea. `textFn(text, offset)` permite envolver cada letra (lo usa el editor). */
-export function renderLyricLine(parts, chordFn, { textFn = t => esc(t), chordAttrs = () => '' } = {}) {
+export function renderLyricLine(parts, chordFn, { textFn = plainText, chordAttrs = () => '' } = {}) {
   const hasChords = parts.some(p => p.chord !== null);
-  const hasText = parts.some(p => p.text.trim());
+  // si fuera de los acordes sólo hay signos ("[", "]", "(", "-", "x2"…) es una línea de acordes:
+  // se muestra de corrido, como una intro
+  const hasText = parts.some(p => !isMarks(p.text));
+  const marks = !hasText && parts.some(p => p.text.length > 0);
   let html = '', off = 0;
   parts.forEach((p, pi) => {
     if (p.chord !== null) html += `<span class="a"><span class="ch"${chordAttrs(pi)}>${esc(chordFn(p.chord))}</span></span>`;
-    html += textFn(p.text, off);
+    // en una línea de acordes, sin espacio antes de un ']' o ')' que cierra (no en el editor: ahí cada letra cuenta)
+    html += textFn(marks && textFn === plainText ? p.text.replace(/\s+(?=[\])])/g, '') : p.text, off);
     off += p.text.length;
   });
-  const cls = ['line', hasChords ? 'has-chords' : '', hasText ? '' : 'chords-only'].filter(Boolean).join(' ');
+  const cls = ['line', hasChords ? 'has-chords' : '', hasText ? '' : 'chords-only', marks ? 'marks' : ''].filter(Boolean).join(' ');
   return `<div class="${cls}">${html}</div>`;
 }
 
