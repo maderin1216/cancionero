@@ -92,9 +92,9 @@ function drawWave(canvas, buffer, sel) {
  */
 export function audioDialog({ title, hasAudio, desktop, save, remove, current }) {
   return openDialog((d, close) => {
-    let rec = null, timer = null, buffer = null, sel = { start: 0, len: 10 }, playing = null;
+    let rec = null, timer = null, buffer = null, sel = { start: 0, len: 10 }, playing = null, pill = null;
     const stopPlay = () => { try { playing?.stop(); } catch { /* ya terminó */ } playing = null; };
-    const cleanup = () => { clearInterval(timer); rec?.stop(); stopPlay(); };
+    const cleanup = () => { clearInterval(timer); rec?.stop(); rec = null; stopPlay(); pill?.remove(); pill = null; };
 
     const chooseView = () => {
       cleanup();
@@ -123,22 +123,31 @@ export function audioDialog({ title, hasAudio, desktop, save, remove, current })
       catch (err) { toast(kind === 'mic' ? 'No se pudo usar el micrófono (revisá el permiso)' : err.message, 4000); return; }
       rec = record(stream);
       const t0 = Date.now();
-      d.innerHTML = `<h2>Grabando…</h2>
-        <p class="rec-time"><span class="rec-dot"></span> <b data-t>0:00</b> <span class="hint">(máximo ${fmtTime(MAX_RECORD)})</span></p>
-        <p class="hint">${kind === 'mic' ? 'Cantá, tocá o acercá el celular al parlante.' : 'Grabando el sonido de la PC.'} Después elegís el fragmento de hasta ${MAX_SECONDS} segundos.</p>
-        <div class="actions"><button class="btn" data-cancel>Cancelar</button><button class="btn primary" data-stop>Detener</button></div>`;
-      timer = setInterval(() => {
-        const s = (Date.now() - t0) / 1000;
-        d.querySelector('[data-t]').textContent = fmtTime(s);
-        if (s >= MAX_RECORD) d.querySelector('[data-stop]').click();
-      }, 250);
-      d.querySelector('[data-cancel]').onclick = () => { rec.stop(); rec = null; chooseView(); };
-      d.querySelector('[data-stop]').onclick = async () => {
+      // mientras se graba, la ventana se oculta para poder leer la canción; queda un indicador en una esquina
+      const overlay = d.closest('.overlay');
+      overlay.hidden = true;
+      pill = document.createElement('div');
+      pill.className = 'rec-pill';
+      pill.setAttribute('role', 'status');
+      pill.innerHTML = `<span class="rec-dot"></span><b data-t>0:00</b>
+        <button class="btn small primary" data-stop>Detener</button><button class="btn small" data-cancel title="Cancelar la grabación" aria-label="Cancelar la grabación">✕</button>`;
+      document.body.append(pill);
+      const back = () => { pill?.remove(); pill = null; overlay.hidden = false; };
+      const stopNow = async () => {
         clearInterval(timer);
         const r = rec; rec = null;
+        back();
         r.stop();
         loadBlob(await r.done);
       };
+      timer = setInterval(() => {
+        if (!d.isConnected) { cleanup(); return; } // se cerró la ventana (por ejemplo con Escape)
+        const s = (Date.now() - t0) / 1000;
+        pill.querySelector('[data-t]').textContent = fmtTime(s);
+        if (s >= MAX_RECORD) stopNow();
+      }, 250);
+      pill.querySelector('[data-stop]').onclick = stopNow;
+      pill.querySelector('[data-cancel]').onclick = () => { clearInterval(timer); rec.stop(); rec = null; back(); chooseView(); };
     };
 
     const loadBlob = async blob => {

@@ -293,6 +293,12 @@ body.logged-out .search-wrap { visibility: hidden; }
 .audio-src { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
 .audio-src .btn { justify-content: center; padding: 12px; font-size: 16px; }
 .wave { display: block; width: 100%; height: 90px; margin: 6px 0; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; color: var(--ink); touch-action: none; }
-.rec-time { font-size: 22px; display: flex; align-items: center; gap: 8px; }
 .rec-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--danger); animation: blink 1s infinite; }
 @keyframes blink { 50% { opacity: .2; } }
+.rec-pill {
+  position: fixed; z-index: 45; top: calc(var(--top) + env(safe-area-inset-top) + 8px); right: 8px;
+  display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px;
+  background: var(--bg); border: 1px solid var(--danger); border-radius: 999px; box-shadow: 0 4px 16px rgba(0,0,0,.2);
+  font-variant-numeric: tabular-nums;
+}
+.rec-pill .btn { padding: 4px 10px; }
