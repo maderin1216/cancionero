@@ -2,7 +2,7 @@
 import { ApiStore } from './store.js';
 import { APP_VERSION, API_BASE } from './config.js';
 import { renderSong, fitToWidth, separateChords } from './render.js';
-import { transposedKeyName } from './song.js';
+import { transposedKeyName, songCapo } from './song.js';
 import { keyName, setAccidentals } from './chords.js';
 import { esc, debounce, formatDate, fold } from './util.js';
 import { toast, openDialog, confirmDialog, formDialog } from './ui.js';
@@ -13,7 +13,7 @@ import { audioDialog, togglePlay, stopPlayer, fmtTime } from './audio.js';
 
 const SETTINGS_KEY = 'cancionero.settings';
 const settings = Object.assign(
-  { notation: 'latin', accidentals: 'sharp', theme: 'light', songSize: 18, fit: true, wakeLock: true },
+  { notation: 'latin', accidentals: 'sharp', theme: 'light', songSize: 18, fit: true, wakeLock: true, toolsOpen: true },
   (() => { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch { return {}; } })(),
 );
 const saveSettings = () => { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); applySettings(); };
@@ -46,7 +46,9 @@ async function onVisChange(e) {
 const $ = s => document.querySelector(s);
 const view = $('#view');
 let store, current = null;
-const tempSemis = new Map(); // transporte temporal (fuera de listas) mientras la app está abierta
+const tempSemis = new Map(); // tono cambiado (fuera de listas) mientras la app está abierta
+const tempCapo = new Map();  // transporte (pinza) cambiado fuera de listas, ídem
+const capoLabel = c => (c ? `T${c}` : '');
 
 const isDesktop = location.protocol === 'app:';
 const isLocalDev = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
@@ -335,6 +337,17 @@ function songView(path, lpath = null, idx = 0) {
   if (list) path = item?.song;
   let semis = item ? (item.semis || 0) : (tempSemis.get(path) || 0);
   let entry = store.songs.get(path);
+  // transporte: el de la lista si lo tiene; si no, el que se eligió recién o el de la canción
+  const capoNow = () => item && item.capo !== undefined ? item.capo
+    : tempCapo.has(path) ? tempCapo.get(path) : entry ? songCapo(entry.song) : 0;
+  const saveListCapo = debounce(async () => {
+    try { await store.saveList(list); } catch (e) { toast('No se pudo guardar el transporte en la lista'); }
+  }, 600);
+  const setCapo = c => {
+    if (item && list.canEdit) { item.capo = c; saveListCapo(); }
+    else tempCapo.set(path, c);
+    render();
+  };
 
   // el tono dentro de una lista es personal: se guarda sólo para este usuario
   const saveListSemis = debounce(async () => {
@@ -357,12 +370,19 @@ function songView(path, lpath = null, idx = 0) {
     }
     const k = entry.key;
     const shown = transposedKeyName(k, semis, settings.notation);
+    const capo = capoNow();
+    const capoOpts = Array.from({ length: 10 }, (_, c) => `<option value="${c}" ${c === capo ? 'selected' : ''}>${c ? 'Transporte ' + c : 'Sin transporte'}</option>`).join('');
     view.innerHTML = `<div class="song-page">
-      <div class="song-title">${esc(entry.title)}</div>
+      <div class="song-head">
+        <div class="song-title">${esc(entry.title)}</div>
+        <button class="tools-toggle" data-act="tools" aria-expanded="${settings.toolsOpen}" title="${settings.toolsOpen ? 'Ocultar' : 'Mostrar'} las herramientas">
+          <b>${esc(shown || '—')}</b>${capo ? ` · <b>${capoLabel(capo)}</b>` : ''} <span class="chev">${settings.toolsOpen ? '▴' : '▾'}</span></button>
+      </div>
       ${entry.mine ? '' : `<div class="song-owner">de ${esc(entry.owner_name)} · sólo lectura</div>`}
-      <div class="song-tools">
+      <div class="song-tools" ${settings.toolsOpen ? '' : 'hidden'}>
         <span class="keybox"><button data-act="down" aria-label="Bajar medio tono">−</button><button class="key" data-act="keys">${esc(shown || '—')}</button><button data-act="up" aria-label="Subir medio tono">+</button></span>
         <span class="orig">${semis ? `${semis > 0 ? '+' : ''}${semis} · original ${esc(keyName(k, settings.notation))} <button data-act="reset">volver</button>` : 'tono original'}</span>
+        <select class="capo-sel" data-capo title="Transporte: traste donde va la pinza (cejilla)" aria-label="Transporte">${capoOpts}</select>
         ${entry.audio ? `<button class="btn small audio-btn" data-act="play">▶ Escuchar <span class="hint">${fmtTime(entry.audio.d)}</span></button>` : ''}
         ${entry.mine ? `<button class="btn small" data-act="audio">🎙 ${entry.audio ? 'Cambiar audio' : 'Agregar audio'}</button>` : ''}
         <span class="spacer"></span>
@@ -415,7 +435,8 @@ function songView(path, lpath = null, idx = 0) {
       saveSettings();
     }
     else if (a === 'print') window.print();
-    else if (a === 'addlist') addToListDialog(path, semis);
+    else if (a === 'addlist') addToListDialog(path, semis, capoNow());
+    else if (a === 'tools') { settings.toolsOpen = !settings.toolsOpen; saveSettings(); render(); }
     else if (a === 'play') {
       togglePlay(path, () => store.audioBlob(path), (st, t) => {
         const btn = view.querySelector('[data-act=play]');
@@ -439,14 +460,47 @@ function songView(path, lpath = null, idx = 0) {
       catch (err) { toast('No se pudo copiar: ' + err.message); }
     }
   };
+  const onCapo = e => { if (e.target.matches('[data-capo]')) setCapo(+e.target.value); };
   view.addEventListener('click', onClick);
   view.addEventListener('change', onVisChange);
+  view.addEventListener('change', onCapo);
+
+  // zoom con dos dedos sobre la letra: cambia el tamaño de letra (pasa a tamaño manual)
+  let pinch = null, pinchRaf = 0;
+  const dist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  const onPinchStart = e => {
+    const el = e.target.closest?.('.song-page');
+    if (e.touches.length !== 2 || !el) return;
+    const song = view.querySelector('.song');
+    pinch = { d0: dist(e.touches), size0: parseFloat(song.style.fontSize) || settings.songSize, size: 0 };
+    song.classList.remove('fit');
+  };
+  const onPinchMove = e => {
+    if (!pinch || e.touches.length !== 2) return;
+    e.preventDefault();
+    pinch.size = Math.max(8, Math.min(60, pinch.size0 * dist(e.touches) / pinch.d0));
+    cancelAnimationFrame(pinchRaf);
+    pinchRaf = requestAnimationFrame(() => {
+      const song = view.querySelector('.song');
+      if (song) { song.style.fontSize = pinch.size + 'px'; separateChords(song); }
+    });
+  };
+  const onPinchEnd = e => {
+    if (!pinch || e.touches.length >= 2) return;
+    const size = pinch.size;
+    pinch = null;
+    if (size) { settings.fit = false; settings.songSize = Math.round(size); saveSettings(); render(); }
+  };
+  view.addEventListener('touchstart', onPinchStart, { passive: true });
+  view.addEventListener('touchmove', onPinchMove, { passive: false });
+  view.addEventListener('touchend', onPinchEnd, { passive: true });
+  view.addEventListener('touchcancel', onPinchEnd, { passive: true });
 
   // deslizar a izquierda/derecha para cambiar de canción dentro de una lista
-  let sx = 0, sy = 0;
-  const ts = e => { sx = e.touches[0].clientX; sy = e.touches[0].clientY; };
+  let sx = 0, sy = 0, multi = false;
+  const ts = e => { sx = e.touches[0].clientX; sy = e.touches[0].clientY; multi = e.touches.length > 1; };
   const te = e => {
-    if (!list) return;
+    if (!list || multi) return;
     const dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy;
     if (Math.abs(dx) > 90 && Math.abs(dy) < 50) {
       const to = idx + (dx < 0 ? 1 : -1);
@@ -468,7 +522,19 @@ function songView(path, lpath = null, idx = 0) {
       item = list.items[idx];
       render();
     },
-    leave: () => { stopPlayer(); window.removeEventListener('resize', onResize); view.removeEventListener('click', onClick); view.removeEventListener('change', onVisChange); view.removeEventListener('touchstart', ts); view.removeEventListener('touchend', te); },
+    leave: () => {
+      stopPlayer();
+      window.removeEventListener('resize', onResize);
+      view.removeEventListener('click', onClick);
+      view.removeEventListener('change', onVisChange);
+      view.removeEventListener('change', onCapo);
+      view.removeEventListener('touchstart', ts);
+      view.removeEventListener('touchend', te);
+      view.removeEventListener('touchstart', onPinchStart);
+      view.removeEventListener('touchmove', onPinchMove);
+      view.removeEventListener('touchend', onPinchEnd);
+      view.removeEventListener('touchcancel', onPinchEnd);
+    },
   };
 }
 
@@ -489,10 +555,11 @@ function pickKey(origKey, semis) {
   });
 }
 
-async function addToListDialog(path, semis) {
+async function addToListDialog(path, semis, capo = 0) {
   const lists = store.listList().filter(l => l.canEdit);
   const chosen = await openDialog((d, close) => {
     d.innerHTML = `<h2>Agregar a una lista</h2>
+      ${capo || semis ? `<p class="hint" style="margin-top:0">Se guarda con el tono que estás viendo${capo ? ` y transporte ${capo}` : ''}.</p>` : ''}
       <ul class="items">${lists.map(l => `<li class="item" data-p="${esc(l.path)}"><span class="t">${esc(l.name)}<small>${esc(formatDate(l.date))}${l.mine ? '' : ' · de ' + esc(l.owner_name)}</small></span><span class="count">${l.items.length}</span></li>`).join('') || '<div class="empty">No hay listas todavía</div>'}</ul>
       <div class="actions"><button class="btn" data-x>Cancelar</button><button class="btn primary" data-new>+ Nueva lista</button></div>`;
     d.onclick = e => {
@@ -508,7 +575,7 @@ async function addToListDialog(path, semis) {
     if (!f) return;
     list = { name: f.name, date: f.date, items: [] };
   } else list = store.lists.get(chosen);
-  list.items.push({ song: path, semis });
+  list.items.push({ song: path, semis, capo });
   try {
     await store.saveList(list);
     if (list.id && semis) await store.saveListSemis(list);
@@ -586,7 +653,8 @@ function listView(lpath) {
       ${list.mine ? '' : '<p class="hint">El tono que elijas en cada canción es sólo para vos: no le cambia nada a los demás.</p>'}
       <ul class="items">${list.items.map((it, i) => {
         const s = store.songs.get(it.song);
-        const k = s ? transposedKeyName(s.key, it.semis || 0, settings.notation) : '';
+        const capo = it.capo !== undefined ? it.capo : s ? songCapo(s.song) : 0;
+        const k = s ? transposedKeyName(s.key, it.semis || 0, settings.notation) + (capo ? ` · ${capoLabel(capo)}` : '') : '';
         return `<li class="item" ${ed ? 'draggable="true"' : ''} data-i="${i}">
           <span class="num">${i + 1}</span>
           <a class="t" href="${listHash(lpath, i)}" style="text-decoration:none">${it.label ? `<small class="label">${esc(it.label)}</small>` : ''}${s ? esc(s.title) : list.titles[it.song] ? `${esc(list.titles[it.song])} <span class="hint">(no disponible para vos)</span>` : '(canción borrada)'}${it.semis ? `<small>${it.semis > 0 ? '+' : ''}${it.semis} desde el original</small>` : ''}</a>

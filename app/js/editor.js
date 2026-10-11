@@ -58,13 +58,13 @@ export function modelToLine({ text, chords }) {
 
 function splitSource(text) {
   // separa título y tono (van en campos aparte) del cuerpo
-  const meta = { title: '', key: '' };
+  const meta = { title: '', key: '', capo: '' };
   const body = [];
   let header = true;
   for (const line of text.replace(/\r/g, '').split('\n')) {
     const d = line.match(DIRECTIVE_RE);
-    if (header && d && /^(title|t|key|k)$/i.test(d[1])) {
-      meta[/^t/i.test(d[1]) ? 'title' : 'key'] = d[2] || '';
+    if (header && d && /^(title|t|key|k|capo)$/i.test(d[1])) {
+      meta[/^capo$/i.test(d[1]) ? 'capo' : /^t/i.test(d[1]) ? 'title' : 'key'] = d[2] || '';
       continue;
     }
     if (header && !line.trim() && !body.length) continue;
@@ -93,6 +93,7 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
     <div class="ed-meta">
       <label class="field"><span>Título</span><input name="title" value="${esc(meta.title)}" placeholder="Nombre de la canción"></label>
       <label class="field"><span>Tono original</span>${keySelectHtml(meta.key || (entry ? keyName(songKey(entry.song)) : ''))}</label>
+      <label class="field"><span>Transporte</span><select name="capo">${Array.from({ length: 10 }, (_, c) => `<option value="${c}" ${c === (parseInt(meta.capo, 10) || 0) ? 'selected' : ''}>${c ? 'Transporte ' + c : 'Sin transporte'}</option>`).join('')}</select></label>
       <label class="field"><span>Quién la puede ver</span><select name="visibility">${VIS_OPTIONS.map(([v, t]) => `<option value="${v}" ${v === (entry?.visibility || 'private') ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
       <div class="field"><span>Transportar y guardar</span><div class="row"><button class="btn small" data-act="tdown">− ½ tono</button><button class="btn small" data-act="tup">+ ½ tono</button></div></div>
     </div>
@@ -122,6 +123,7 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
   const titleIn = view.querySelector('[name=title]');
   const keyIn = view.querySelector('[name=key]');
   const visIn = view.querySelector('[name=visibility]');
+  const capoIn = view.querySelector('[name=capo]');
   src.value = body;
   const bar = view.querySelector('.chordbar');
   let caret = null;       // {li, pos}: sílaba marcada en la vista previa
@@ -435,6 +437,7 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
   titleIn.addEventListener('input', markDirty);
   keyIn.addEventListener('change', markDirty);
   visIn.addEventListener('change', markDirty);
+  capoIn.addEventListener('change', markDirty);
   const onKey = e => {
     if (e.ctrlKey && !e.altKey && e.key.toLowerCase() === 's') { e.preventDefault(); save(); return; }
     if (document.querySelector('.overlay')) return;  // hay un diálogo abierto
@@ -465,7 +468,8 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
     if (!title) { toast('Poné un título'); titleIn.focus(); return; }
     let key = keyIn.value.trim();
     if (!key) { const k = songKey(parseSong(src.value)); if (k) key = keyName(k); }
-    const text = `{title: ${title}}\n${key ? `{key: ${key}}\n` : ''}\n${normalizeChordsInText(src.value.replace(/\s+$/, ''))}\n`;
+    const capo = +capoIn.value;
+    const text = `{title: ${title}}\n${key ? `{key: ${key}}\n` : ''}${capo ? `{capo: ${capo}}\n` : ''}\n${normalizeChordsInText(src.value.replace(/\s+$/, ''))}\n`;
     try {
       const p = await store.saveSong(path, text, { baseRev, visibility: visIn.value });
       dirty = false;

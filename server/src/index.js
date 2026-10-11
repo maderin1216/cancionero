@@ -429,6 +429,8 @@ function cleanItems(items) {
     id: String(it.id || crypto.randomUUID().slice(0, 8)).slice(0, 40),
     song: String(it.song || '').slice(0, 100),
     ...(it.label ? { label: String(it.label).slice(0, 80) } : {}),
+    // transporte (posición de la pinza/cejilla) con el que se toca en esta lista
+    ...(Number.isInteger(it.capo) && it.capo >= 0 && it.capo <= 11 ? { capo: it.capo } : {}),
   }));
 }
 

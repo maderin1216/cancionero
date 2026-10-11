@@ -121,6 +121,12 @@ export function transposedKeyName(origKey, semis, notation) {
   return origKey ? keyName({ root: (origKey.root + semis + 120) % 12, minor: origKey.minor }, notation) : '';
 }
 
+/** Transporte (posición de la pinza/cejilla) por defecto de la canción: {capo: N}. 0 = sin transporte. */
+export function songCapo(song) {
+  const n = parseInt(song.meta.capo, 10);
+  return n >= 1 && n <= 11 ? n : 0;
+}
+
 /** Texto plano (sin acordes) de la canción, para búsquedas. */
 export function songPlainText(song) {
   return song.lines.filter(l => l.type === 'lyric').map(l => l.parts.map(p => p.text).join('')).join(' ');
