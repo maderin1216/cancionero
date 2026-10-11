@@ -306,8 +306,8 @@ body.logged-out .search-wrap { visibility: hidden; }
 /* ---------- cabecera de la canción: título + botón para plegar las herramientas ---------- */
 .song-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
 .song-head .song-title { min-width: 0; }
-.tools-toggle { flex: none; display: inline-flex; align-items: center; gap: 4px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); font-size: 15px; }
-.tools-toggle .chev { font-size: 12px; color: var(--muted); }
+.tools-toggle { flex: none; width: 40px; height: 40px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: var(--bg); }
+.tools-toggle svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
 .song-tools[hidden] { display: none !important; }
 .capo-sel { padding: 6px 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); font-size: 14px; height: 38px; }
 /* el zoom con dos dedos lo maneja la app (no el navegador) */

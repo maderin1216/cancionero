@@ -375,8 +375,8 @@ function songView(path, lpath = null, idx = 0) {
     view.innerHTML = `<div class="song-page">
       <div class="song-head">
         <div class="song-title">${esc(entry.title)}</div>
-        <button class="tools-toggle" data-act="tools" aria-expanded="${settings.toolsOpen}" title="${settings.toolsOpen ? 'Ocultar' : 'Mostrar'} las herramientas">
-          <b>${esc(shown || '—')}</b>${capo ? ` · <b>${capoLabel(capo)}</b>` : ''} <span class="chev">${settings.toolsOpen ? '▴' : '▾'}</span></button>
+        <button class="tools-toggle" data-act="tools" aria-expanded="${settings.toolsOpen}" title="${settings.toolsOpen ? 'Ocultar' : 'Mostrar'} las herramientas" aria-label="${settings.toolsOpen ? 'Ocultar' : 'Mostrar'} las herramientas">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="${settings.toolsOpen ? 'M6 15l6-6 6 6' : 'M6 9l6 6 6-6'}"/></svg></button>
       </div>
       ${entry.mine ? '' : `<div class="song-owner">de ${esc(entry.owner_name)} · sólo lectura</div>`}
       <div class="song-tools" ${settings.toolsOpen ? '' : 'hidden'}>
