@@ -1,7 +1,7 @@
 // Cancionero: app principal (rutas y vistas).
 import { ApiStore } from './store.js';
 import { APP_VERSION, API_BASE } from './config.js';
-import { renderSong, fitToWidth, separateChords } from './render.js';
+import { renderSong, fitToWidth, fitToPage, separateChords } from './render.js';
 import { transposedKeyName, songCapo } from './song.js';
 import { keyName, setAccidentals } from './chords.js';
 import { esc, debounce, formatDate, fold } from './util.js';
@@ -386,7 +386,7 @@ function songView(path, lpath = null, idx = 0) {
         ${entry.audio ? `<button class="btn small audio-btn" data-act="play">▶ Escuchar <span class="hint">${fmtTime(entry.audio.d)}</span></button>` : ''}
         ${entry.mine ? `<button class="btn small" data-act="audio">🎙 ${entry.audio ? 'Cambiar audio' : 'Agregar audio'}</button>` : ''}
         <span class="spacer"></span>
-        <span class="size-btns row">${settings.fit ? '' : '<button data-act="fit" aria-label="Ajustar al ancho" title="Ajustar al ancho de la pantalla">↔</button>'}<button data-act="smaller" aria-label="Letra más chica">A−</button><button data-act="bigger" aria-label="Letra más grande">A+</button></span>
+        <span class="size-btns row"><button data-act="fit" class="fit-btn${settings.fit === 'page' ? ' on' : ''}" aria-pressed="${settings.fit === 'page'}" aria-label="Ajustar a la pantalla" title="${settings.fit === 'page' ? 'Volver a ajustar sólo al ancho' : 'Ajustar a la pantalla: que entre toda la canción, a lo ancho y a lo alto'}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v20M2 12h20M12 2l-3 3M12 2l3 3M12 22l-3-3M12 22l3-3M2 12l3-3M2 12l3 3M22 12l-3-3M22 12l-3 3"/></svg></button><button data-act="smaller" aria-label="Letra más chica">A−</button><button data-act="bigger" aria-label="Letra más grande">A+</button></span>
         ${entry.mine ? `${visSelect(path, entry.visibility)}<a class="btn small" href="#/editar/${encodeURIComponent(path)}${semis ? '/' + semis : ''}">Editar</a>` : '<button class="btn small" data-act="copy">Agregar a mis canciones</button>'}
         ${isDesktop || matchMedia('(min-width: 900px)').matches ? '<button class="btn small" data-act="print">Imprimir</button>' : ''}
         <button class="btn small" data-act="addlist">+ Lista</button>
@@ -400,7 +400,12 @@ function songView(path, lpath = null, idx = 0) {
   const layout = () => {
     const el = view.querySelector('.song');
     if (!el) return;
-    if (settings.fit) fitToWidth(el);
+    if (settings.fit === 'page') {
+      // lo que queda de pantalla debajo del comienzo de la canción (menos la barra de la lista)
+      const top = el.getBoundingClientRect().top + window.scrollY;
+      const bar = view.querySelector('.listbar')?.offsetHeight || 0;
+      fitToPage(el, window.innerHeight - top - bar - 16);
+    } else if (settings.fit) fitToWidth(el);
     else { el.style.fontSize = settings.songSize + 'px'; separateChords(el); }
   };
   const onResize = debounce(layout, 120);
@@ -426,7 +431,7 @@ function songView(path, lpath = null, idx = 0) {
     else if (a === 'down') setSemis(semis - 1);
     else if (a === 'reset') setSemis(0);
     else if (a === 'keys') { const s = await pickKey(entry.key, semis); if (s !== undefined) setSemis(s); }
-    else if (a === 'fit') { settings.fit = true; saveSettings(); render(); }
+    else if (a === 'fit') { settings.fit = settings.fit === 'page' ? true : 'page'; saveSettings(); render(); }
     else if (a === 'bigger' || a === 'smaller') {
       const cur = settings.fit ? parseFloat(view.querySelector('.song').style.fontSize) || settings.songSize : settings.songSize;
       settings.fit = false;
@@ -491,6 +496,25 @@ function songView(path, lpath = null, idx = 0) {
     pinch = null;
     if (size) { settings.fit = false; settings.songSize = Math.round(size); saveSettings(); render(); }
   };
+  const saveZoom = debounce(() => saveSettings(), 400);
+  const onWheel = e => {
+    if (!e.ctrlKey || !e.target.closest?.('.song-page')) return;
+    e.preventDefault(); // en vez del zoom del navegador, cambia el tamaño de la letra
+    const song = view.querySelector('.song');
+    if (!song) return;
+    const cur = parseFloat(song.style.fontSize) || settings.songSize;
+    const size = Math.max(8, Math.min(60, Math.round(cur * (e.deltaY < 0 ? 1.1 : 1 / 1.1) * 10) / 10));
+    if (settings.fit) {
+      settings.fit = false;
+      song.classList.remove('fit');
+      view.querySelector('.fit-btn')?.classList.remove('on');
+    }
+    settings.songSize = size;
+    song.style.fontSize = size + 'px';
+    separateChords(song);
+    saveZoom();
+  };
+  view.addEventListener('wheel', onWheel, { passive: false });
   view.addEventListener('touchstart', onPinchStart, { passive: true });
   view.addEventListener('touchmove', onPinchMove, { passive: false });
   view.addEventListener('touchend', onPinchEnd, { passive: true });
@@ -530,6 +554,7 @@ function songView(path, lpath = null, idx = 0) {
       view.removeEventListener('change', onCapo);
       view.removeEventListener('touchstart', ts);
       view.removeEventListener('touchend', te);
+      view.removeEventListener('wheel', onWheel);
       view.removeEventListener('touchstart', onPinchStart);
       view.removeEventListener('touchmove', onPinchMove);
       view.removeEventListener('touchend', onPinchEnd);

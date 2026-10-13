@@ -329,3 +329,7 @@ body.logged-out .search-wrap { visibility: hidden; }
   .cb-hint { display: none; }
   #edSource { min-height: 45vh; }
 }
+
+.size-btns .fit-btn { display: inline-grid; place-items: center; }
+.size-btns .fit-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.size-btns .fit-btn.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }

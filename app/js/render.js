@@ -88,3 +88,17 @@ export function fitToWidth(container, { max = 30, min = 5 } = {}) {
   container.style.fontSize = size + 'px';
   return size;
 }
+
+/**
+ * "Ajustar a la pantalla": como fitToWidth, pero además achica la letra si la canción no entra a lo
+ * alto en `availHeight` px. Con los versos en una sola línea, la altura crece en proporción a la letra.
+ */
+export function fitToPage(container, availHeight, opts = {}) {
+  let size = fitToWidth(container, { max: 48, ...opts });
+  const h = container.offsetHeight;
+  if (h > availHeight && availHeight > 50) {
+    size = Math.max(opts.min ?? 5, Math.floor(size * availHeight / h * 10) / 10);
+    container.style.fontSize = size + 'px';
+  }
+  return size;
+}
