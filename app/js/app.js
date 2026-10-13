@@ -181,7 +181,7 @@ function route() {
   else if (parts[0] === 'listas') current = listsView();
   else if (parts[0] === 'lista' && parts.length >= 4) current = songView(null, parts.slice(1, 3).join('/'), +parts[3]);
   else if (parts[0] === 'lista') current = listView(parts.slice(1, 3).join('/'));
-  else if (parts[0] === 'editar' && store.canEditSongs) current = editorView(parts.slice(1).join('/'));
+  else if (parts[0] === 'editar' && store.canEditSongs) current = editorView(parts[1], +parts[2] || 0);
   else if (parts[0] === 'nueva' && store.canEditSongs) current = editorView(null);
   else if (parts[0] === 'ajustes') current = settingsView();
   else if (parts[0] === 'usuarios' && store.isAdmin) current = usersView();
@@ -387,7 +387,7 @@ function songView(path, lpath = null, idx = 0) {
         ${entry.mine ? `<button class="btn small" data-act="audio">🎙 ${entry.audio ? 'Cambiar audio' : 'Agregar audio'}</button>` : ''}
         <span class="spacer"></span>
         <span class="size-btns row">${settings.fit ? '' : '<button data-act="fit" aria-label="Ajustar al ancho" title="Ajustar al ancho de la pantalla">↔</button>'}<button data-act="smaller" aria-label="Letra más chica">A−</button><button data-act="bigger" aria-label="Letra más grande">A+</button></span>
-        ${entry.mine ? `${visSelect(path, entry.visibility)}<a class="btn small" href="#/editar/${encodeURIComponent(path)}">Editar</a>` : '<button class="btn small" data-act="copy">Agregar a mis canciones</button>'}
+        ${entry.mine ? `${visSelect(path, entry.visibility)}<a class="btn small" href="#/editar/${encodeURIComponent(path)}${semis ? '/' + semis : ''}">Editar</a>` : '<button class="btn small" data-act="copy">Agregar a mis canciones</button>'}
         ${isDesktop || matchMedia('(min-width: 900px)').matches ? '<button class="btn small" data-act="print">Imprimir</button>' : ''}
         <button class="btn small" data-act="addlist">+ Lista</button>
       </div>
@@ -785,8 +785,16 @@ async function shareDialog(list) {
 
 // ---------------------------------------------------------------- vista: editor
 
-function editorView(path) {
-  return renderEditor(view, { store, path, settings, onSaved: p => { location.hash = songHash(p); }, onCancel: () => history.back() });
+function editorView(path, semis = 0) {
+  return renderEditor(view, {
+    store, path, settings, semis,
+    onSaved: (p, { keyChanged } = {}) => {
+      // si se guardó en el tono que se estaba viendo, ese pasa a ser el original: ya no hay que transportar
+      if (keyChanged) tempSemis.delete(p);
+      location.hash = songHash(p);
+    },
+    onCancel: () => history.back(),
+  });
 }
 
 // ---------------------------------------------------------------- vista: usuarios (administrador)

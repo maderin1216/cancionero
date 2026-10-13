@@ -56,6 +56,16 @@ export function modelToLine({ text, chords }) {
   return out + text.slice(pos);
 }
 
+/** Cambia el tono de todos los acordes de un texto ChordPro (`semis` semitonos desde la tonalidad k). */
+function transposeText(text, semis, k) {
+  if (!semis) return text;
+  const opts = spellingFor(k, semis, 'latin');
+  opts.forceNotation = false;
+  return text.split('\n').map(l => (DIRECTIVE_RE.test(l) ? l
+    : l.replace(/\[([^[\]]*)\]/g, (_, c) => `[${transposeChordText(c, semis, opts)}]`))).join('\n');
+}
+const shiftKey = (k, semis) => (k ? { root: (k.root + semis + 120) % 12, minor: k.minor } : null);
+
 function splitSource(text) {
   // separa título y tono (van en campos aparte) del cuerpo
   const meta = { title: '', key: '', capo: '' };
@@ -75,12 +85,17 @@ function splitSource(text) {
   return { meta, body: body.join('\n') };
 }
 
-export function renderEditor(view, { store, path, settings, onSaved, onCancel }) {
+export function renderEditor(view, { store, path, settings, onSaved, onCancel, semis: viewSemis = 0 }) {
   const entry = path ? store.songs.get(path) : null;
   if (path && !entry) { view.innerHTML = '<div class="page empty">No se encontró la canción.</div>'; return {}; }
   if (entry && !entry.mine) { view.innerHTML = '<div class="page empty">Esta canción no es tuya: no la podés editar. Podés agregar una copia a tus canciones desde la canción.</div>'; return {}; }
-  const { meta, body } = splitSource(normalizeChordsInText(entry ? entry.text : ''));
+  const { meta, body: savedBody } = splitSource(normalizeChordsInText(entry ? entry.text : ''));
   const baseRev = entry?.rev; // versión que se empezó a editar, para detectar cambios de otros
+  // si la canción se estaba viendo en otro tono, se edita en ese tono y al guardar vuelve al original
+  const savedKey = parseKey(meta.key) || (entry ? songKey(entry.song) : null);
+  let editSemis = entry && savedKey ? viewSemis : 0;
+  const body = transposeText(savedBody, editSemis, savedKey);
+  const shownKey = editSemis ? keyName(shiftKey(savedKey, editSemis)) : (meta.key || (savedKey ? keyName(savedKey) : ''));
   let dirty = false;
 
   view.innerHTML = `<div class="editor">
@@ -90,12 +105,14 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
         <button class="btn" data-act="cancel">Cancelar</button>
         <button class="btn primary" data-act="save">Guardar</button>
       </div></div>
+    ${editSemis ? `<div class="ed-note" data-semisnote>Estás editando en <b>${esc(shownKey)}</b>, el tono en que la estabas viendo. La canción está guardada en <b>${esc(keyName(savedKey))}</b> y al guardar sigue en ${esc(keyName(savedKey))}.
+      <button class="btn small" data-act="keepkey">Guardarla en ${esc(shownKey)}</button></div>` : ''}
     <div class="ed-meta">
       <label class="field"><span>Título</span><input name="title" value="${esc(meta.title)}" placeholder="Nombre de la canción"></label>
-      <label class="field"><span>Tono original</span>${keySelectHtml(meta.key || (entry ? keyName(songKey(entry.song)) : ''))}</label>
+      <label class="field"><span>Tono</span>${keySelectHtml(shownKey)}</label>
       <label class="field"><span>Transporte</span><select name="capo">${Array.from({ length: 10 }, (_, c) => `<option value="${c}" ${c === (parseInt(meta.capo, 10) || 0) ? 'selected' : ''}>${c ? 'Transporte ' + c : 'Sin transporte'}</option>`).join('')}</select></label>
       <label class="field"><span>Quién la puede ver</span><select name="visibility">${VIS_OPTIONS.map(([v, t]) => `<option value="${v}" ${v === (entry?.visibility || 'private') ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
-      <div class="field"><span>Transportar y guardar</span><div class="row"><button class="btn small" data-act="tdown">− ½ tono</button><button class="btn small" data-act="tup">+ ½ tono</button></div></div>
+      <div class="field"><span>Cambiar el tono</span><div class="row"><button class="btn small" data-act="tdown">− ½ tono</button><button class="btn small" data-act="tup">+ ½ tono</button></div></div>
     </div>
     <div class="row" style="margin:4px 0 8px">
       <button class="btn small" data-act="chorus" title="Marca las líneas seleccionadas como estribillo (negrita)">Marcar estribillo</button>
@@ -430,6 +447,11 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
       renderPreview();
     }
     else if (a === 'help') helpDialog();
+    else if (a === 'keepkey') {
+      editSemis = 0;
+      markDirty();
+      view.querySelector('[data-semisnote]').innerHTML = `Se va a guardar en <b>${esc(keyIn.value)}</b> como tono de la canción.`;
+    }
     else if (a === 'delchord') { if (caret) removeChordAtCaret(); else toast('Marcá primero la sílaba en la vista previa'); }
   });
 
@@ -468,13 +490,19 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
     if (!title) { toast('Poné un título'); titleIn.focus(); return; }
     let key = keyIn.value.trim();
     if (!key) { const k = songKey(parseSong(src.value)); if (k) key = keyName(k); }
+    let bodyText = src.value.replace(/\s+$/, '');
+    if (editSemis) {
+      const k = parseKey(key);
+      bodyText = transposeText(bodyText, -editSemis, k);
+      if (k) key = keyName(shiftKey(k, -editSemis));
+    }
     const capo = +capoIn.value;
-    const text = `{title: ${title}}\n${key ? `{key: ${key}}\n` : ''}${capo ? `{capo: ${capo}}\n` : ''}\n${normalizeChordsInText(src.value.replace(/\s+$/, ''))}\n`;
+    const text = `{title: ${title}}\n${key ? `{key: ${key}}\n` : ''}${capo ? `{capo: ${capo}}\n` : ''}\n${normalizeChordsInText(bodyText)}\n`;
     try {
       const p = await store.saveSong(path, text, { baseRev, visibility: visIn.value });
       dirty = false;
       toast('Guardada');
-      onSaved(p);
+      onSaved(p, { keyChanged: viewSemis && !editSemis });
     } catch (e) {
       if (e.status !== 409) { toast('No se pudo guardar: ' + e.message, 5000); return; }
       // otra persona guardó cambios mientras se editaba
@@ -483,7 +511,7 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel })
         const p = await store.saveSong(path, text, { force: true, visibility: visIn.value });
         dirty = false;
         toast('Guardada');
-        onSaved(p);
+        onSaved(p, { keyChanged: viewSemis && !editSemis });
       } catch (e2) { toast('No se pudo guardar: ' + e2.message, 5000); }
     }
   }
