@@ -128,7 +128,7 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel, s
     </div>
     <div class="ed-tabs"><button class="btn small" data-tab="src">Texto</button><button class="btn small" data-tab="pre">Acordes</button></div>
     <div class="ed-cols">
-      <section data-sec="src"><h3>Texto (los acordes van entre corchetes: <code>[SOL]Ho[RE]la</code>)</h3>
+      <section data-sec="src"><h3>Texto</h3>
         <textarea id="edSource" spellcheck="false" placeholder="Pegá o escribí la letra acá.&#10;&#10;Después hacé clic en la vista previa, sobre la sílaba donde cambia el acorde."></textarea></section>
       <section data-sec="pre" class="on"><h3>Vista previa — clic en una sílaba para marcarla y elegí el acorde · arrastrá los acordes para moverlos</h3>
         <div class="ed-preview song"></div></section>
