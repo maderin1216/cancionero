@@ -68,6 +68,7 @@ async function route(req, env, url) {
   }
   if (p === '/api/setup' && m === 'POST') return setup(db, await readJson(req));
   if (p === '/api/login' && m === 'POST') return login(db, await readJson(req));
+  if ((mt = p.match(/^\/api\/public\/([A-Za-z0-9_-]{10,40})$/)) && m === 'GET') return publicSong(db, mt[1]);
 
   const me = await authenticate(db, req);
 
@@ -92,6 +93,10 @@ async function route(req, env, url) {
   }
   if ((mt = p.match(/^\/api\/songs\/([a-z0-9-]+)\/history$/)) && m === 'GET') return songHistory(db, me, mt[1]);
   if ((mt = p.match(/^\/api\/songs\/([a-z0-9-]+)\/copy$/)) && m === 'POST') return copyVisibleSong(db, me, mt[1]);
+  if ((mt = p.match(/^\/api\/songs\/([a-z0-9-]+)\/share$/))) {
+    if (m === 'POST') return shareSong(db, me, mt[1]);
+    if (m === 'DELETE') return unshareSong(db, me, mt[1]);
+  }
   if ((mt = p.match(/^\/api\/songs\/([a-z0-9-]+)\/audio$/))) {
     if (m === 'GET') return getAudio(db, me, mt[1]);
     if (m === 'PUT') return putAudio(db, me, mt[1], req);
@@ -241,7 +246,7 @@ async function getOwnSong(db, me, slug) {
 async function sync(db, me, have) {
   const now = Date.now();
   const [songsRes, lists, audioRes] = await Promise.all([
-    db.prepare('SELECT s.id, s.slug, s.text, s.rev, s.owner_id, s.visibility, s.copied_from, u.name AS owner_name FROM songs s JOIN users u ON u.id = s.owner_id WHERE s.deleted = 0').all(),
+    db.prepare('SELECT s.id, s.slug, s.text, s.rev, s.owner_id, s.visibility, s.copied_from, s.created_at, u.name AS owner_name FROM songs s JOIN users u ON u.id = s.owner_id WHERE s.deleted = 0').all(),
     visibleLists(db, me),
     db.prepare('SELECT song_id, updated_at, duration FROM song_audio').all(),
   ]);
@@ -256,7 +261,7 @@ async function sync(db, me, have) {
     const mine = s.owner_id === me.id;
     if (canViewSong(s, me, grants)) {
       songs.push({
-        slug: s.slug, rev: s.rev, mine, owner_name: s.owner_name, visibility: s.visibility, audio: audio.get(s.id) || null,
+        slug: s.slug, rev: s.rev, mine, owner_name: s.owner_name, visibility: s.visibility, audio: audio.get(s.id) || null, created_at: s.created_at,
         ...(have[s.slug] === s.rev ? {} : { text: s.text }),
       });
     } else if (s.visibility === 'title') {
@@ -311,9 +316,9 @@ async function freeSlug(db, base) {
 async function insertSong(db, ownerId, text, { visibility = 'private', copiedFrom = null, slugBase } = {}) {
   const slug = await freeSlug(db, slugBase || slugify(songTitle(text)));
   const now = Date.now();
-  const r = await db.prepare('INSERT INTO songs (slug, text, rev, updated_at, updated_by, owner_id, visibility, copied_from) VALUES (?, ?, 1, ?, ?, ?, ?, ?) RETURNING id')
-    .bind(slug, text, now, ownerId, ownerId, visibility, copiedFrom).first();
-  return { slug, rev: 1, updated_at: now, id: r.id };
+  const r = await db.prepare('INSERT INTO songs (slug, text, rev, updated_at, updated_by, owner_id, visibility, copied_from, created_at) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?) RETURNING id')
+    .bind(slug, text, now, ownerId, ownerId, visibility, copiedFrom, now).first();
+  return { slug, rev: 1, updated_at: now, created_at: now, id: r.id };
 }
 
 async function createSong(db, me, body) {
@@ -382,6 +387,34 @@ async function copyVisibleSong(db, me, slug) {
   await db.prepare(`INSERT INTO song_audio (song_id, mime, data, duration, size, updated_at, updated_by)
     SELECT ?, mime, data, duration, size, ?, ? FROM song_audio WHERE song_id = ?`).bind(copy.id, Date.now(), me.id, s.id).run();
   return copy;
+}
+
+// ---------------------------------------------------------------- compartir con enlace público
+
+const newShareToken = () => btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(12)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+/** Enlace para compartir: lo puede crear el dueño, o cualquiera si la canción es visible para todos. */
+async function shareSong(db, me, slug) {
+  const s = await getSong(db, slug);
+  if (s.owner_id !== me.id && s.visibility !== 'public') fail(403, 'Sólo el dueño puede compartir esta canción con un enlace');
+  const cur = await db.prepare('SELECT token FROM song_shares WHERE song_id = ?').bind(s.id).first();
+  if (cur) return { token: cur.token };
+  const token = newShareToken();
+  await db.prepare('INSERT INTO song_shares (token, song_id, created_by, created_at) VALUES (?, ?, ?, ?)').bind(token, s.id, me.id, Date.now()).run();
+  return { token };
+}
+
+async function unshareSong(db, me, slug) {
+  const s = await getOwnSong(db, me, slug);
+  await db.prepare('DELETE FROM song_shares WHERE song_id = ?').bind(s.id).run();
+  return {};
+}
+
+async function publicSong(db, token) {
+  const r = await db.prepare(`SELECT s.text, u.name AS owner_name FROM song_shares sh JOIN songs s ON s.id = sh.song_id
+    JOIN users u ON u.id = s.owner_id WHERE sh.token = ? AND s.deleted = 0`).bind(token).first();
+  if (!r) fail(404, 'Este enlace ya no está disponible');
+  return { text: r.text, owner_name: r.owner_name };
 }
 
 // ---------------------------------------------------------------- audio de la canción

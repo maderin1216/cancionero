@@ -1,8 +1,8 @@
 // Cancionero: app principal (rutas y vistas).
 import { ApiStore } from './store.js';
-import { APP_VERSION, API_BASE } from './config.js';
+import { APP_VERSION, API_BASE, SERVER_URL } from './config.js';
 import { renderSong, fitToWidth, fitToPage, separateChords } from './render.js';
-import { transposedKeyName, songCapo } from './song.js';
+import { transposedKeyName, songCapo, songLink, songToText, transposeChordText, spellingFor, parseSong, songKey, upperTitle } from './song.js';
 import { keyName, setAccidentals } from './chords.js';
 import { esc, debounce, formatDate, fold } from './util.js';
 import { toast, openDialog, confirmDialog, formDialog } from './ui.js';
@@ -13,12 +13,32 @@ import { audioDialog, togglePlay, stopPlayer, fmtTime } from './audio.js';
 
 const SETTINGS_KEY = 'cancionero.settings';
 const settings = Object.assign(
-  { notation: 'latin', accidentals: 'sharp', theme: 'light', songSize: 18, fit: true, wakeLock: true, toolsOpen: true },
+  { notation: 'latin', accidentals: 'sharp', theme: 'light', songSize: 18, fit: true, wakeLock: true, toolsOpen: true, chordColor: 'auto', lyricColor: 'auto' },
   (() => { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch { return {}; } })(),
 );
 const saveSettings = () => { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); applySettings(); };
+// colores para acordes y letra: [modo claro, modo noche]
+const COLORS = {
+  auto: { label: 'Automático (negro / blanco)' },
+  red: { label: 'Rojo', v: ['#c0262d', '#ff6b6b'] },
+  blue: { label: 'Azul', v: ['#1a56db', '#7aa7ff'] },
+  green: { label: 'Verde', v: ['#15803d', '#4ade80'] },
+  orange: { label: 'Naranja', v: ['#c2410c', '#fb923c'] },
+  purple: { label: 'Violeta', v: ['#7e22ce', '#c084fc'] },
+  brown: { label: 'Marrón', v: ['#7c4a1e', '#d6a26b'] },
+  gray: { label: 'Gris', v: ['#555555', '#b0b0b0'] },
+};
+function applyColors() {
+  const dark = settings.theme === 'dark' ? 1 : 0;
+  const root = document.documentElement.style;
+  const set = (prop, key) => { const c = COLORS[key]?.v?.[dark]; if (c) root.setProperty(prop, c); else root.removeProperty(prop); };
+  set('--chord-color', settings.chordColor);
+  set('--lyric-color', settings.lyricColor);
+}
+
 function applySettings() {
   document.documentElement.style.setProperty('--song-size', settings.songSize + 'px');
+  applyColors();
   setAccidentals(settings.accidentals);
   document.documentElement.dataset.theme = settings.theme;
   document.querySelector('meta[name=theme-color]')?.setAttribute('content', settings.theme === 'dark' ? '#000000' : '#ffffff');
@@ -175,7 +195,8 @@ function route() {
   document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('active', a.getAttribute('href') === '#' + h));
   window.scrollTo(0, 0);
 
-  if (!store.loggedIn) current = loginView();
+  if (parts[0] === 'compartida') current = publicView(parts[1]);
+  else if (!store.loggedIn) current = loginView();
   else if (!parts.length) current = songsView();
   else if (parts[0] === 'c') current = songView(parts.slice(1).join('/'));
   else if (parts[0] === 'listas') current = listsView();
@@ -282,8 +303,9 @@ function songsView() {
     const tab = (id, label, n) => `<button class="tab${songsTab === id ? ' on' : ''}" data-tab="${id}">${label} <span class="count">${n}</span></button>`;
     view.querySelector('[data-tabs]').innerHTML = tab('mine', 'Mías', nMine) + tab('shared', 'Compartidas conmigo', nShared) + tab('others', 'Otras', store.catalog.length);
     visIn.hidden = songsTab !== 'mine';
-    const songRow = x => `<li><a class="item" href="${songHash(x.song.path)}"><span class="t">${esc(x.song.title)}${x.song.audio ? ' <span class="has-audio" title="Tiene audio">🔊</span>' : ''}${x.snippet ? `<small>${esc(x.snippet)}</small>` : ''}<small>de ${esc(x.song.owner_name)}</small></span><span class="k">${esc(keyName(x.song.key, settings.notation))}</span></a></li>`;
-    const mineRow = x => `<li class="item mine-row"><a class="t" href="${songHash(x.song.path)}">${esc(x.song.title)}${x.song.audio ? ' <span class="has-audio" title="Tiene audio">🔊</span>' : ''}${x.snippet ? `<small>${esc(x.snippet)}</small>` : ''}</a>${visSelect(x.song.path, x.song.visibility)}<span class="k">${esc(keyName(x.song.key, settings.notation))}</span></li>`;
+    const shareBtn = x => `<button class="row-share" data-share="${esc(x.song.path)}" title="Compartir" aria-label="Compartir ${esc(x.song.title)}"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="18" cy="5" r="2.6"/><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="19" r="2.6"/><path d="M8.3 10.8l7.4-4.3M8.3 13.2l7.4 4.3"/></svg></button>`;
+    const songRow = x => `<li class="item mine-row"><a class="t" href="${songHash(x.song.path)}">${esc(x.song.title)}${x.song.audio ? ' <span class="has-audio" title="Tiene audio">🔊</span>' : ''}${x.snippet ? `<small>${esc(x.snippet)}</small>` : ''}<small>de ${esc(x.song.owner_name)}</small></a><span class="k">${esc(keyName(x.song.key, settings.notation))}</span>${shareBtn(x)}</li>`;
+    const mineRow = x => `<li class="item mine-row"><a class="t" href="${songHash(x.song.path)}">${esc(x.song.title)}${x.song.audio ? ' <span class="has-audio" title="Tiene audio">🔊</span>' : ''}${x.snippet ? `<small>${esc(x.snippet)}</small>` : ''}</a>${visSelect(x.song.path, x.song.visibility)}<span class="k">${esc(keyName(x.song.key, settings.notation))}</span>${shareBtn(x)}</li>`;
     const otherRow = c => `<li class="item"><span class="t">🔒 ${esc(c.title)}<small>de ${esc(c.owner_name)}${c.copied ? ' · ya tenés una copia' : ''}</small></span><button class="btn small" data-copy="${esc(c.slug)}">Copiar</button></li>`;
     const count = n => filtering ? `<p class="hint">${n} ${n === 1 ? 'canción' : 'canciones'}</p>` : '';
     let body;
@@ -311,6 +333,8 @@ function songsView() {
   const onClick = async e => {
     const t = e.target.closest('[data-tab]');
     if (t) { songsTab = t.dataset.tab; render(); return; }
+    const sh = e.target.closest('[data-share]');
+    if (sh) { const en = store.songs.get(sh.dataset.share); if (en) shareSongDialog(en, tempSemis.get(en.path) || 0); return; }
     const cp = e.target.closest('[data-copy]');
     if (cp) {
       cp.disabled = true;
@@ -382,6 +406,7 @@ function songView(path, lpath = null, idx = 0) {
       <div class="song-tools" ${settings.toolsOpen ? '' : 'hidden'}>
         <span class="keybox"><button data-act="down" aria-label="Bajar medio tono">−</button><button class="key" data-act="keys">${esc(shown || '—')}</button><button data-act="up" aria-label="Subir medio tono">+</button></span>
         <span class="orig">${semis ? `${semis > 0 ? '+' : ''}${semis} · original ${esc(keyName(k, settings.notation))} <button data-act="reset">volver</button>` : 'tono original'}</span>
+        ${songLink(entry.song) ? `<a class="btn small" href="${esc(songLink(entry.song))}" target="_blank" rel="noopener noreferrer">🔗 ${esc(linkLabel(songLink(entry.song)))}</a>` : ''}
         <select class="capo-sel" data-capo title="Transporte: traste donde va la pinza (cejilla)" aria-label="Transporte">${capoOpts}</select>
         ${entry.audio ? `<button class="btn small audio-btn" data-act="play">▶ Escuchar <span class="hint">${fmtTime(entry.audio.d)}</span></button>` : ''}
         ${entry.mine ? `<button class="btn small" data-act="audio">🎙 ${entry.audio ? 'Cambiar audio' : 'Agregar audio'}</button>` : ''}
@@ -390,6 +415,8 @@ function songView(path, lpath = null, idx = 0) {
         ${entry.mine ? `${visSelect(path, entry.visibility)}<a class="btn small" href="#/editar/${encodeURIComponent(path)}${semis ? '/' + semis : ''}">Editar</a>` : '<button class="btn small" data-act="copy">Agregar a mis canciones</button>'}
         ${isDesktop || matchMedia('(min-width: 900px)').matches ? '<button class="btn small" data-act="print">Imprimir</button>' : ''}
         <button class="btn small" data-act="addlist">+ Lista</button>
+        <button class="btn small" data-act="share"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="18" cy="5" r="2.6"/><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="19" r="2.6"/><path d="M8.3 10.8l7.4-4.3M8.3 13.2l7.4 4.3"/></svg> Compartir</button>
+        ${entry.created_at ? `<span class="song-date">Agregada el ${new Date(entry.created_at).toLocaleDateString('es-AR')}</span>` : ''}
       </div>
       <div class="song${settings.fit ? ' fit' : ''}">${renderSong(entry.song, { semis, notation: settings.notation, origKey: k })}</div>
     </div>
@@ -441,6 +468,7 @@ function songView(path, lpath = null, idx = 0) {
     }
     else if (a === 'print') window.print();
     else if (a === 'addlist') addToListDialog(path, semis, capoNow());
+    else if (a === 'share') shareSongDialog(entry, semis);
     else if (a === 'tools') { settings.toolsOpen = !settings.toolsOpen; saveSettings(); render(); }
     else if (a === 'play') {
       togglePlay(path, () => store.audioBlob(path), (st, t) => {
@@ -561,6 +589,103 @@ function songView(path, lpath = null, idx = 0) {
       view.removeEventListener('touchcancel', onPinchEnd);
     },
   };
+}
+
+function linkLabel(url) {
+  const h = (() => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; } })();
+  if (/youtu\.?be/.test(h)) return 'YouTube';
+  if (/spotify/.test(h)) return 'Spotify';
+  if (/instagram/.test(h)) return 'Instagram';
+  return 'Escuchar versión';
+}
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch {
+    const ta = Object.assign(document.createElement('textarea'), { value: text });
+    document.body.append(ta); ta.select();
+    const ok = document.execCommand('copy'); ta.remove();
+    return ok;
+  }
+}
+
+/** Compartir una canción: con un enlace (cualquiera la ve, sin usuario) o como texto con los acordes. */
+function shareSongDialog(entry, semis = 0) {
+  const canLink = entry.mine || entry.visibility === 'public';
+  const opts = spellingFor(entry.key, semis, settings.notation);
+  const songText = () => songToText(entry.song, c => transposeChordText(c, semis, opts));
+  let link = null;
+  const getLink = async () => (link ??= await store.shareLink(entry.path).then(u => (isDesktop ? u.replace(location.origin, SERVER_URL) : u)));
+  const open = url => window.open(url, '_blank', 'noopener');
+  return openDialog((d, close) => {
+    d.innerHTML = `<h2>Compartir "${esc(entry.title)}"</h2>
+      ${navigator.share ? '<button class="btn primary share-main" data-sh="native">Compartir… (WhatsApp, Instagram y más)</button>' : ''}
+      <div class="share-grid">
+        <button class="btn" data-sh="whatsapp">WhatsApp</button>
+        <button class="btn" data-sh="telegram">Telegram</button>
+        <button class="btn" data-sh="email">Correo</button>
+        <button class="btn" data-sh="copylink" ${canLink ? '' : 'disabled'}>Copiar enlace</button>
+        <button class="btn" data-sh="copytext">Copiar letra y acordes</button>
+      </div>
+      <p class="hint">${canLink
+        ? 'Con el enlace, cualquiera puede ver la canción aunque no tenga usuario' + (semis ? ' (en el tono original)' : '') + '.'
+        : 'Esta canción es de ' + esc(entry.owner_name) + ': sólo su dueño puede compartirla con enlace. Podés compartir la letra y los acordes como texto.'}</p>
+      <div class="actions">${entry.mine ? '<button class="btn danger" data-sh="revoke" style="margin-right:auto">Dejar de compartir el enlace</button>' : ''}<button class="btn" data-x>Cerrar</button></div>`;
+    d.onclick = async e => {
+      if (e.target.closest('[data-x]')) { close(); return; }
+      const b = e.target.closest('[data-sh]');
+      if (!b) return;
+      const kind = b.dataset.sh;
+      try {
+        if (kind === 'copytext') { toast(await copyText(`${entry.title}\n\n${songText()}`) ? 'Letra y acordes copiados' : 'No se pudo copiar'); return; }
+        if (kind === 'revoke') { await store.unshare(entry.path); link = null; toast('Listo: el enlace dejó de funcionar'); return; }
+        const url = canLink ? await getLink() : null;
+        // por enlace si se puede; si no, la letra con acordes (en WhatsApp, ``` la muestra con letra de ancho fijo)
+        const msg = url ? `${entry.title}\n${url}` : `*${entry.title}*\n\`\`\`\n${songText()}\n\`\`\``;
+        if (kind === 'native') await navigator.share(url ? { title: entry.title, text: entry.title, url } : { title: entry.title, text: msg });
+        else if (kind === 'whatsapp') open('https://wa.me/?text=' + encodeURIComponent(msg));
+        else if (kind === 'telegram') open(url ? `https://t.me/share/url?url=${encodeURIComponent(url)}&text=${encodeURIComponent(entry.title)}` : 'https://t.me/share/url?url=%20&text=' + encodeURIComponent(msg));
+        else if (kind === 'email') open(`mailto:?subject=${encodeURIComponent(entry.title)}&body=${encodeURIComponent(url ? msg : `${entry.title}\n\n${songText()}`)}`);
+        else if (kind === 'copylink') toast(await copyText(url) ? 'Enlace copiado' : 'No se pudo copiar');
+      } catch (err) { if (err?.name !== 'AbortError') toast('No se pudo compartir: ' + err.message); }
+    };
+  });
+}
+
+/** Página de una canción compartida por enlace: se ve sin usuario, con el tono cambiable. */
+function publicView(token) {
+  let semis = 0, data = null, alive = true;
+  view.innerHTML = '<div class="page empty">Cargando la canción…</div>';
+  const render = () => {
+    if (!alive || !data) return;
+    const song = parseSong(data.text);
+    const k = songKey(song);
+    view.innerHTML = `<div class="song-page">
+      <div class="song-title">${esc(upperTitle(song.meta.title))}</div>
+      <div class="song-owner">Compartida por ${esc(data.owner_name)}</div>
+      <div class="song-tools">
+        <span class="keybox"><button data-act="down" aria-label="Bajar medio tono">−</button><button class="key" disabled>${esc(transposedKeyName(k, semis, settings.notation) || '—')}</button><button data-act="up" aria-label="Subir medio tono">+</button></span>
+        ${songCapo(song) ? `<span class="orig">Transporte ${songCapo(song)}</span>` : ''}
+        ${songLink(song) ? `<a class="btn small" href="${esc(songLink(song))}" target="_blank" rel="noopener noreferrer">🔗 ${esc(linkLabel(songLink(song)))}</a>` : ''}
+        <span class="spacer"></span>
+        <a class="btn small" href="#/">${store.loggedIn ? 'Ir a mis canciones' : 'Entrar al Cancionero'}</a>
+      </div>
+      <div class="song fit">${renderSong(song, { semis, notation: settings.notation, origKey: k })}</div>
+    </div>`;
+    fitToWidth(view.querySelector('.song'));
+  };
+  const onClick = e => {
+    const b = e.target.closest('[data-act]');
+    if (!b) return;
+    semis = (semis + (b.dataset.act === 'up' ? 1 : -1) + 18) % 12 - 6;
+    render();
+  };
+  const onResize = debounce(render, 150);
+  view.addEventListener('click', onClick);
+  window.addEventListener('resize', onResize);
+  store.publicSong(token).then(r => { data = r; render(); })
+    .catch(err => { if (alive) view.innerHTML = `<div class="page empty">${esc(err.message)}<p><a class="btn" href="#/">Ir al Cancionero</a></p></div>`; });
+  return { leave: () => { alive = false; view.removeEventListener('click', onClick); window.removeEventListener('resize', onResize); } };
 }
 
 function pickKey(origKey, semis) {
@@ -901,6 +1026,11 @@ function settingsView() {
     <label class="field"><span>Alteraciones</span>
       <select name="accidentals"><option value="sharp">Sostenidos (DO#, FA#, LA#…)</option><option value="flat">Bemoles (REb, SOLb, SIb…)</option><option value="auto">Automático según el tono</option></select></label>
     <label class="row" style="margin-bottom:12px"><input name="night" type="checkbox" ${settings.theme === 'dark' ? 'checked' : ''}> Modo noche (fondo negro, letras blancas)</label>
+    <div class="color-fields">
+      <label class="field"><span>Color de los acordes</span><select name="chordColor">${Object.entries(COLORS).map(([k, c]) => `<option value="${k}">${c.label}</option>`).join('')}</select></label>
+      <label class="field"><span>Color de la letra</span><select name="lyricColor">${Object.entries(COLORS).map(([k, c]) => `<option value="${k}">${c.label}</option>`).join('')}</select></label>
+    </div>
+    <div class="song color-sample" aria-hidden="true">${renderSong(parseSong('[SOL]Hecha un mar de [MIm]lágrimas al [DO]verlo'), {})}</div>
     <label class="row" style="margin-bottom:18px"><input name="wakeLock" type="checkbox" ${settings.wakeLock ? 'checked' : ''}> Mantener la pantalla encendida al ver una canción</label>
     <p class="hint" style="margin-top:24px">${store.songs.size} canciones · ${store.lists.size} listas · versión ${esc(APP_VERSION)}</p>
   </div>`;
@@ -909,6 +1039,11 @@ function settingsView() {
   view.querySelector('[name=accidentals]').value = settings.accidentals;
   view.querySelector('[name=accidentals]').onchange = e => { settings.accidentals = e.target.value; saveSettings(); };
   view.querySelector('[name=night]').onchange = e => { settings.theme = e.target.checked ? 'dark' : 'light'; saveSettings(); };
+  for (const n of ['chordColor', 'lyricColor']) {
+    const sel = view.querySelector(`[name=${n}]`);
+    sel.value = settings[n];
+    sel.onchange = () => { settings[n] = sel.value; saveSettings(); };
+  }
   view.querySelector('[name=wakeLock]').onchange = e => { settings.wakeLock = e.target.checked; saveSettings(); };
   view.querySelector('[data-act=logout]').onclick = async () => {
     if (!await confirmDialog('¿Cerrar sesión en este dispositivo?', 'Cerrar sesión')) return;

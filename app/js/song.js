@@ -14,11 +14,27 @@ import { parseChord, transposeChord, normalizeChord, parseKey, keyName, keyUsesF
 const DIRECTIVE_RE = /^\{\s*([a-zA-Z_]+)\s*(?::\s*([\s\S]*?))?\s*\}$/;
 const ALIASES = { t: 'title', st: 'subtitle', k: 'key', c: 'comment', soc: 'start_of_chorus', eoc: 'end_of_chorus' };
 
+/**
+ * Estribillo con asteriscos, como en WhatsApp: una línea que empieza con "*" abre el estribillo y una
+ * que termina con "*" lo cierra (puede ser la misma). Un "*" solo en una línea abre o cierra.
+ * Devuelve {start, end, lone, line} con la línea ya sin esos asteriscos.
+ */
+export function starMarks(line) {
+  const plain = line.replace(/\[[^[\]]*\]/g, '').trim();
+  if (plain === '*') return { start: false, end: false, lone: true, line: '' };
+  const start = plain.startsWith('*');
+  const end = plain.length > 1 && plain.endsWith('*');
+  let out = line;
+  if (start) out = out.replace('*', '');
+  if (end) { const i = out.lastIndexOf('*'); out = out.slice(0, i) + out.slice(i + 1); }
+  return { start, end, lone: false, line: out };
+}
+
 /** Parsea texto ChordPro a {meta, lines}. */
 export function parseSong(text) {
   const meta = {};
   const lines = [];
-  let chorus = false;
+  let chorus = false, starChorus = false;
   for (const raw of text.replace(/\r/g, '').split('\n')) {
     const line = raw.replace(/\s+$/, '');
     const d = line.trim().match(DIRECTIVE_RE);
@@ -32,7 +48,11 @@ export function parseSong(text) {
       continue;
     }
     if (!line.trim()) { lines.push({ type: 'blank' }); continue; }
-    lines.push({ type: 'lyric', parts: parseLyricLine(line), chorus });
+    const st = starMarks(line);
+    if (st.lone) { starChorus = !starChorus; continue; }
+    if (st.start) starChorus = true;
+    lines.push({ type: 'lyric', parts: parseLyricLine(st.line), chorus: chorus || starChorus });
+    if (st.end) starChorus = false;
   }
   // quitar líneas en blanco del principio y del final
   while (lines.length && lines[0].type === 'blank') lines.shift();
@@ -119,6 +139,40 @@ export function spellingFor(origKey, semis, notation) {
 
 export function transposedKeyName(origKey, semis, notation) {
   return origKey ? keyName({ root: (origKey.root + semis + 120) % 12, minor: origKey.minor }, notation) : '';
+}
+
+/** Título en MAYÚSCULAS, pero los acordes que tenga quedan como acorde ("GLORIA - REm", no "REM"). */
+export function upperTitle(t) {
+  return String(t || '').split(/([\s()[\]\-–—,]+)/).map(w => (parseChord(w) ? normalizeChord(w) : w.toLocaleUpperCase('es'))).join('');
+}
+
+/** Enlace a una versión de la canción ({link: https://…}); sólo http/https. */
+export function songLink(song) {
+  const u = (song.meta.link || '').trim();
+  return /^https?:\/\/\S+$/i.test(u) ? u : '';
+}
+
+/** La canción como texto con los acordes en la línea de arriba (para compartir por WhatsApp, etc.). */
+export function songToText(song, chordFn = c => c) {
+  const out = [];
+  for (const l of song.lines) {
+    if (l.type === 'blank') { out.push(''); continue; }
+    if (l.type === 'comment') { out.push(l.text); continue; }
+    const hasText = l.parts.some(p => p.text.trim());
+    if (!hasText) { out.push(l.parts.map(p => (p.chord !== null ? chordFn(p.chord) : '') + p.text).join(' ').replace(/\s+/g, ' ').trim()); continue; }
+    let chords = '', text = '';
+    for (const p of l.parts) {
+      if (p.chord !== null) {
+        if (chords.length > text.length) text += ' '.repeat(chords.length - text.length);
+        chords += ' '.repeat(Math.max(0, text.length - chords.length)) + chordFn(p.chord) + ' ';
+      }
+      text += p.text;
+    }
+    if (chords.trim()) out.push(chords.trimEnd());
+    out.push(text.trimEnd());
+  }
+  while (out.length && !out.at(-1)) out.pop();
+  return out.join('\n');
 }
 
 /** Transporte (posición de la pinza/cejilla) por defecto de la canción: {capo: N}. 0 = sin transporte. */

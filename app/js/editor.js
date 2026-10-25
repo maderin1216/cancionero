@@ -2,7 +2,7 @@
 // En la vista previa: clic en una letra = ubicar el cursor ahí; después se elige el acorde con la
 // botonera o con el teclado (Ctrl+A = LA, Ctrl+Shift+A = LA#, Alt+A = LAm…). Clic en un acorde =
 // cambiarlo o quitarlo; arrastrar un acorde = moverlo (incluso a otra línea).
-import { parseSong, parseLyricLine, songKey, transposeChordText, spellingFor, normalizeChordsInText } from './song.js';
+import { parseSong, parseLyricLine, songKey, transposeChordText, spellingFor, normalizeChordsInText, starMarks, upperTitle } from './song.js';
 import { renderLyricLine, separateChords } from './render.js';
 import { parseKey, keyName, noteName, keyUsesFlats, accidentals } from './chords.js';
 import { chordsOverLyricsToChordPro } from './textimport.js';
@@ -68,13 +68,13 @@ const shiftKey = (k, semis) => (k ? { root: (k.root + semis + 120) % 12, minor: 
 
 function splitSource(text) {
   // separa título y tono (van en campos aparte) del cuerpo
-  const meta = { title: '', key: '', capo: '' };
+  const meta = { title: '', key: '', capo: '', link: '' };
   const body = [];
   let header = true;
   for (const line of text.replace(/\r/g, '').split('\n')) {
     const d = line.match(DIRECTIVE_RE);
-    if (header && d && /^(title|t|key|k|capo)$/i.test(d[1])) {
-      meta[/^capo$/i.test(d[1]) ? 'capo' : /^t/i.test(d[1]) ? 'title' : 'key'] = d[2] || '';
+    if (header && d && /^(title|t|key|k|capo|link)$/i.test(d[1])) {
+      meta[/^(capo|link)$/i.test(d[1]) ? d[1].toLowerCase() : /^t/i.test(d[1]) ? 'title' : 'key'] = d[2] || '';
       continue;
     }
     if (header && !line.trim() && !body.length) continue;
@@ -108,10 +108,11 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel, s
     ${editSemis ? `<div class="ed-note" data-semisnote>Estás editando en <b>${esc(shownKey)}</b>, el tono en que la estabas viendo. La canción está guardada en <b>${esc(keyName(savedKey))}</b> y al guardar sigue en ${esc(keyName(savedKey))}.
       <button class="btn small" data-act="keepkey">Guardarla en ${esc(shownKey)}</button></div>` : ''}
     <div class="ed-meta">
-      <label class="field"><span>Título</span><input name="title" value="${esc(meta.title)}" placeholder="Nombre de la canción"></label>
+      <label class="field"><span>Título</span><input name="title" value="${esc(upperTitle(meta.title))}" placeholder="NOMBRE DE LA CANCIÓN"></label>
       <label class="field"><span>Tono</span>${keySelectHtml(shownKey)}</label>
       <label class="field"><span>Transporte</span><select name="capo">${Array.from({ length: 10 }, (_, c) => `<option value="${c}" ${c === (parseInt(meta.capo, 10) || 0) ? 'selected' : ''}>${c ? 'Transporte ' + c : 'Sin transporte'}</option>`).join('')}</select></label>
       <label class="field"><span>Quién la puede ver</span><select name="visibility">${VIS_OPTIONS.map(([v, t]) => `<option value="${v}" ${v === (entry?.visibility || 'private') ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+      <label class="field ed-link"><span>Enlace a una versión (YouTube, Spotify… opcional)</span><input name="link" type="url" inputmode="url" value="${esc(meta.link)}" placeholder="https://…"></label>
       <div class="field"><span>Cambiar el tono</span><div class="row"><button class="btn small" data-act="tdown">− ½ tono</button><button class="btn small" data-act="tup">+ ½ tono</button></div></div>
     </div>
     <div class="row" style="margin:4px 0 8px">
@@ -141,6 +142,7 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel, s
   const keyIn = view.querySelector('[name=key]');
   const visIn = view.querySelector('[name=visibility]');
   const capoIn = view.querySelector('[name=capo]');
+  const linkIn = view.querySelector('[name=link]');
   src.value = body;
   const bar = view.querySelector('.chordbar');
   let caret = null;       // {li, pos}: sílaba marcada en la vista previa
@@ -161,7 +163,7 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel, s
 
   function renderPreview() {
     const ls = lines();
-    let html = '', chorus = false;
+    let html = '', chorus = false, star = false;
     ls.forEach((line, li) => {
       const d = line.match(DIRECTIVE_RE);
       if (d) {
@@ -172,7 +174,11 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel, s
         return;
       }
       if (!line.trim()) { html += '<div class="blank"></div>'; return; }
-      html += renderEditableLine(lineToModel(line), li, chorus);
+      const st = starMarks(line);
+      if (st.lone) { star = !star; html += '<div class="comment">*</div>'; return; }
+      if (st.start) star = true;
+      html += renderEditableLine(lineToModel(line), li, chorus || star);
+      if (st.end) star = false;
     });
     pre.innerHTML = html || '<div class="empty">Escribí la letra en el cuadro de texto.</div>';
     separateChords(pre);
@@ -457,9 +463,11 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel, s
 
   src.addEventListener('input', debounce(() => { markDirty(); renderPreview(); }, 150));
   titleIn.addEventListener('input', markDirty);
+  titleIn.addEventListener('blur', () => { titleIn.value = upperTitle(titleIn.value); });
   keyIn.addEventListener('change', markDirty);
   visIn.addEventListener('change', markDirty);
   capoIn.addEventListener('change', markDirty);
+  linkIn.addEventListener('input', markDirty);
   const onKey = e => {
     if (e.ctrlKey && !e.altKey && e.key.toLowerCase() === 's') { e.preventDefault(); save(); return; }
     if (document.querySelector('.overlay')) return;  // hay un diálogo abierto
@@ -486,7 +494,7 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel, s
   window.addEventListener('beforeunload', onUnload);
 
   async function save() {
-    const title = titleIn.value.trim();
+    const title = upperTitle(titleIn.value.trim());
     if (!title) { toast('Poné un título'); titleIn.focus(); return; }
     let key = keyIn.value.trim();
     if (!key) { const k = songKey(parseSong(src.value)); if (k) key = keyName(k); }
@@ -497,7 +505,9 @@ export function renderEditor(view, { store, path, settings, onSaved, onCancel, s
       if (k) key = keyName(shiftKey(k, -editSemis));
     }
     const capo = +capoIn.value;
-    const text = `{title: ${title}}\n${key ? `{key: ${key}}\n` : ''}${capo ? `{capo: ${capo}}\n` : ''}\n${normalizeChordsInText(bodyText)}\n`;
+    const link = linkIn.value.trim();
+    if (link && !/^https?:\/\/\S+$/i.test(link)) { toast('El enlace tiene que empezar con https://'); linkIn.focus(); return; }
+    const text = `{title: ${title}}\n${key ? `{key: ${key}}\n` : ''}${capo ? `{capo: ${capo}}\n` : ''}${link ? `{link: ${link}}\n` : ''}\n${normalizeChordsInText(bodyText)}\n`;
     try {
       const p = await store.saveSong(path, text, { baseRev, visibility: visIn.value });
       dirty = false;
@@ -534,7 +544,7 @@ function helpDialog() {
         <code>Ctrl+A</code> = LA · <code>Ctrl+Shift+A</code> = LA# · <code>Alt+A</code> = LAm · <code>Alt+Shift+A</code> = LA#m<br>
         Las flechas mueven la sílaba marcada y <code>Supr</code> quita su acorde. Los acordes se escriben siempre en MAYÚSCULAS.</p>
       <p><b>En el texto</b> los acordes van entre corchetes, justo antes de la sílaba:<br><code>[SOL]Hecha un mar de [MIm]lágrimas</code></p>
-      <p><b>Estribillo</b> (se ve en negrita): entre <code>{soc}</code> y <code>{eoc}</code>, o seleccioná las líneas y tocá "Marcar estribillo".</p>
+      <p><b>Estribillo</b> (se ve en negrita): como en WhatsApp, poné un <code>*</code> al principio de la primera línea y otro al final de la última: <code>*Por eso ámense … yo viviré en ti*</code>. También sirve <code>{soc}</code> … <code>{eoc}</code>, o seleccioná las líneas y tocá "Marcar estribillo".</p>
       <p><b>Comentario</b> (ej. "Intro", "x2"): <code>{c: Intro}</code></p>
       <p><b>Sólo acordes</b> (intro, puente): una línea con <code>[(SOL RE MIm DO) x2]</code></p>
       <p><b>Si copiás de internet</b> una canción con los acordes en la línea de arriba, pegala y tocá "Convertir acordes arriba".</p>

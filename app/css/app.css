@@ -333,3 +333,18 @@ body.logged-out .search-wrap { visibility: hidden; }
 .size-btns .fit-btn { display: inline-grid; place-items: center; }
 .size-btns .fit-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .size-btns .fit-btn.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+
+/* ---------- colores de letra y acordes (Ajustes) ---------- */
+.song { color: var(--lyric-color, var(--ink)); }
+.song .ch { color: var(--chord-color, inherit); }
+.color-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.color-sample { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; margin: 0 0 18px; font-size: 18px; }
+
+/* ---------- compartir, enlace y fecha ---------- */
+.row-share { flex: none; width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: var(--bg); }
+.row-share svg, .btn .ico { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.share-main { width: 100%; justify-content: center; padding: 12px; margin-bottom: 10px; }
+.share-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.share-grid .btn { justify-content: center; }
+.song-date { font-size: 13px; color: var(--muted); }
+.ed-link { grid-column: 1 / -1; }

@@ -6,7 +6,7 @@
 //   lista   -> "listas/<id>"
 // Cada ítem de lista es {id, song, label, semis}; "semis" (el tono) es personal de cada usuario.
 
-import { parseSong, songKey, songPlainText } from './song.js';
+import { parseSong, songKey, songPlainText, upperTitle } from './song.js';
 import { fold } from './util.js';
 
 const SESSION_KEY = 'cancionero.session';
@@ -149,7 +149,7 @@ export class ApiStore extends EventTarget {
         const next = {};
         for (const s of r.songs) {
           const text = s.text ?? this.rawSongs[s.slug]?.text;
-          if (text !== undefined) next[s.slug] = { text, rev: s.rev, mine: s.mine, owner_name: s.owner_name, visibility: s.visibility, audio: s.audio };
+          if (text !== undefined) next[s.slug] = { text, rev: s.rev, mine: s.mine, owner_name: s.owner_name, visibility: s.visibility, audio: s.audio, created_at: s.created_at };
         }
         this.rawSongs = next;
         this.rawLists = r.lists;
@@ -179,7 +179,7 @@ export class ApiStore extends EventTarget {
     let r;
     if (slug) r = await this.api('PUT', `/api/songs/${slug}`, { text, baseRev: baseRev ?? this.rawSongs[slug]?.rev, force, visibility });
     else r = await this.api('POST', '/api/songs', { text, visibility });
-    this.rawSongs[r.slug] = { ...this.rawSongs[r.slug], text, rev: r.rev, mine: true, owner_name: this.me?.name, visibility: visibility || this.rawSongs[r.slug]?.visibility || 'private' };
+    this.rawSongs[r.slug] = { created_at: r.created_at, ...this.rawSongs[r.slug], text, rev: r.rev, mine: true, owner_name: this.me?.name, visibility: visibility || this.rawSongs[r.slug]?.visibility || 'private' };
     this.saveCache();
     this.rebuild();
     return r.slug;
@@ -256,6 +256,25 @@ export class ApiStore extends EventTarget {
     this.rawSongs[slug].audio = null;
     this.saveCache();
     this.rebuild();
+  }
+
+  // ---------------------------------------------------------------- compartir con enlace
+
+  /** Enlace público para compartir la canción (se crea la primera vez). */
+  async shareLink(slug) {
+    const { token } = await this.api('POST', `/api/songs/${slug}/share`);
+    return `${this.apiBase || location.origin}/#/compartida/${token}`;
+  }
+
+  unshare(slug) { return this.api('DELETE', `/api/songs/${slug}/share`); }
+
+  /** Canción compartida por enlace (no hace falta usuario). */
+  async publicSong(token) {
+    const r = await fetch(`${this.apiBase}/api/public/${encodeURIComponent(token)}`, { cache: 'no-store' }).catch(() => null);
+    if (!r) throw new Error('Sin conexión');
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || 'No se pudo abrir la canción');
+    return data;
   }
 
   /** Cambia quién puede ver estas canciones propias: 'private' | 'title' | 'public'. */
@@ -353,13 +372,13 @@ export class ApiStore extends EventTarget {
 
 const newItemId = () => crypto.getRandomValues(new Uint32Array(1))[0].toString(36);
 
-function makeSongEntry(path, { text, rev, mine, owner_name, visibility, audio }) {
+function makeSongEntry(path, { text, rev, mine, owner_name, visibility, audio, created_at }) {
   let parsed;
   try { parsed = parseSong(text); } catch { parsed = { meta: {}, lines: [] }; }
-  const title = parsed.meta.title || path;
+  const title = upperTitle(parsed.meta.title || path); // los títulos van siempre en mayúsculas
   const plain = songPlainText(parsed);
   return {
-    path, text, rev, song: parsed, title, mine: mine !== false, owner_name, visibility: visibility || 'private', audio: audio || null,
+    path, text, rev, song: parsed, title, mine: mine !== false, owner_name, visibility: visibility || 'private', audio: audio || null, created_at: created_at || null,
     key: songKey(parsed),
     sortKey: fold(title).replace(/^[¡¿"'(]+/, ''),
     plain,
